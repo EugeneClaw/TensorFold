@@ -110,9 +110,18 @@ class SerialEngine:
         """
 
         import mlx.core as mx
+        import os
 
         last = None
         step = max(1, int(self.prefill_step))
+        # SpecPrefill: the WHOLE remaining prompt is scored and sparse-fed in one pass
+        # (whole-prompt threshold semantics, E-053 recipe). Below the threshold the stock
+        # exact loop runs untouched. (Checkpoint segments large enough to trigger this are
+        # scored without their predecessors' context — an accepted approximation on a cold path.)
+        if os.environ.get("TF_SPEC", "0") not in ("", "0", "false", "off"):
+            from tensorfold.families.glm5_next import specprefill as sp
+            if len(tokens) > sp.spec_threshold():
+                return sp.make_feed(self.model).feed(tokens, cache)
         for begin in range(0, len(tokens), step):
             chunk = [int(t) for t in tokens[begin:begin + step]]
             hidden = self.model.hidden(mx.array([chunk], dtype=mx.uint32), cache)
