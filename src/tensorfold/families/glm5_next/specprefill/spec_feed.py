@@ -68,21 +68,13 @@ def _scatter_rows(real: mx.array, rel: mx.array, span: int, fill=None) -> mx.arr
 
 
 def _kda_branch(kda: KDA, c, z0: mx.array, rel: mx.array, span: int) -> mx.array:
-    """One KDA sub-layer over a fed chunk, advanced across the full span (gap rows decay only)."""
-    rows = int(z0.shape[0])
+    """One KDA sub-layer over a fed chunk, advanced across the full span (gap rows decay only).
+    ``kda_rows`` applies f_b/g_b/o_norm/gating internally — its y is ready for o_proj."""
     proj = _scatter_rows(project(z0, kda.in_proj, rows_exact=False), rel, span)
-    taps = kda.taps
-    conv_prev = c.conv if c.conv is not None else mx.zeros((taps - 1, 3 * kda.width), dtype=mx.bfloat16)
+    conv_prev = c.conv if c.conv is not None else mx.zeros((kda.taps - 1, 3 * kda.width), dtype=mx.bfloat16)
     entry = c.ssm if c.ssm is not None else mx.zeros((1, kda.heads, kda.dim, kda.dim), dtype=mx.float32)
     y, ssm, conv_new = KDA_K.kda_rows(kda, proj, conv_prev, entry)
-    y = y[rel]                                                # ghost reads on gap rows dropped
-    fa = proj[rel, kda.cuts[2]:kda.cuts[3]]
-    g = kda._small(kda.f_b, fa, False).reshape(rows, kda.heads, kda.dim)
-    gate = mx.sigmoid(g.astype(mx.float32))
-    o = mx.fast.rms_norm(y.reshape(rows, kda.heads, kda.dim).astype(mx.float32), kda.o_norm,
-                         kda.cfg.rms_norm_eps)
-    o = (o * gate).astype(mx.bfloat16).reshape(rows, kda.width)
-    out = project(o, kda.o_proj, rows_exact=False)            # fed rows only; the state moved `span`
+    out = project(y[rel], kda.o_proj, rows_exact=False)       # fed rows only; the state moved `span`
     c.ssm, c.conv, c.offset, c._replay = ssm, mx.contiguous(conv_new), c.offset + span, None
     return out
 
@@ -172,13 +164,19 @@ def make_feed(glmflash):
             importance, score_s = scorer.score_tokens(tokens)
             keep_idx = select_chunks(importance, keep_pct=spec_keep_pct())
             keep, feed_mask, raws = feed_sparse(glmflash.model, tokens, keep_idx, cache, step=2048)
-            # the MTP cache sees exactly the rows the backbone actually fed (oMLX's sparse absorb),
-            # with their true next-tokens, so drafts keep their prompt context
+            # the generation seed is the feed's OWN last row (the final prompt token is fed by
+            # feed_sparse exactly once — re-feeding it through model.hidden would duplicate it
+            # in every cache and shift all attention); collapse its streams to raw hidden,
+            # then the engine's one-row path on the LAST TOKEN OF THE NEXT CHUNK handles decode.
+            # The MTP cache sees exactly the rows the backbone actually fed (oMLX's sparse
+            # absorb), with their true next-tokens, so drafts keep their prompt context.
             glmflash._raw = raws
             fed_pos = np.nonzero(feed_mask)[0]
             nxt_tokens = np.array([tokens[min(j + 1, n - 1)] for j in fed_pos], dtype=np.int64)
             glmflash.absorb_draft_context(raws, nxt_tokens, cache)
-            hidden = glmflash.model.hidden(mx.array([int(tokens[-1])]).reshape(1, 1), cache)
+            # final-norm the feed's own last row: exactly what model.hidden returns for the seed
+            hidden = mx.fast.rms_norm(raws[-1:], glmflash.model.norm,
+                                      glmflash.model.args.rms_norm_eps)[None]
             mx.eval(hidden)
             fed = int(np.count_nonzero(feed_mask))
             if spec_log():
