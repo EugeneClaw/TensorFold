@@ -30,6 +30,11 @@ class MTPCache(MLACache):
 
     drafted = 0
 
+    def trim(self, count: int) -> None:
+        # the MTP cache holds only the fed rows of a SpecPrefill feed, so engine-side window
+        # trims sized against the FULL-length backbone caches can exceed its length (E-075 F2)
+        super().trim(min(int(count), max(self.offset, 0)))
+
 
 class GLMFlash:
     # tokens drawn by gpu_sampling (the exact keyed rule on the GPU): the host sampler's top-k over 154,880 logits

@@ -15,8 +15,7 @@ how hard decoding attends to it:
     importance = mean_lookahead( max_head( avgpool13( softmax(Q K^T) ) ) )
 
 Selection keeps whole 32-token chunks (top keep-pct) plus a mandatory trailing
-512-token window, mirroring select_chunks upstream.
-"""
+512-token window, mirroring select_chunks upstream."""
 
 from __future__ import annotations
 
@@ -89,7 +88,7 @@ class SpecScorer:
         qr = mx.fast.rms_norm(project(h, attn.q_a, rows_exact=False), attn.q_norm, self.eps)
         q = project(qr, attn.q_b, rows_exact=False).reshape(1, attn.heads, attn.nope)
         k, v = attn.keys_values(cache.keys[:end])          # [H, end, dk]
-        mask = (mx.arange(end)[None] <= (end - 1)).astype(mx.bfloat16)
+        mask = mx.arange(end)[None] <= (end - 1)           # bool keep-mask (F4: never an additive float)
         o = mx.fast.scaled_dot_product_attention(q.transpose(1, 0, 2)[None], k[None], v[None],
                                                  scale=self.scale, mask=mask[None, None])
         o = o[0].transpose(1, 0, 2).reshape(1, -1)
@@ -123,7 +122,7 @@ class SpecScorer:
         weights = mx.softmax(scores.astype(mx.float32), axis=-1)
         if self.pool_kernel > 1:
             weights = _avg_pool1d(weights, self.pool_kernel)
-        importance = mx.mean(mx.max(weights, axis=1), axis=0)                  # max heads, mean lookahead
+        importance = mx.mean(mx.max(weights, axis=0), axis=0)  # max over heads, then mean over lookahead (oMLX)
         mx.eval(importance)
         return importance, time.perf_counter() - started
 

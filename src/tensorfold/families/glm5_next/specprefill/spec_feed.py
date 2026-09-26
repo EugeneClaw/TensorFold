@@ -1,23 +1,26 @@
 """Sparse prompt prefill for GLM-5.3-Flash: feed kept tokens, advance caches by the full length.
 
 The dual of the scorer: only the selected rows run through the layers, while
-every cache advances by the FULL prompt length —
+every cache advances by the FULL prompt length (positions are implicit —
+cache.offset IS the position book):
 
 - MLA layers: every prompt row is appended exactly once, in order — real
   latents for kept rows, zero latents with a very-negative indexer gate for
-  skipped rows (keys built from zero latents are zero; the indexer never
-  selects them). Attention queries are computed for kept rows only, so the
-  sub-layer cost stays O(kept x span). The pool lifecycle of
-  ``MLACache.append`` is reused as-is: contiguous appends complete
-  boundary-straddling blocks on the next chunk.
-- KDA layers: skipped rows enter the recurrence with zero q/k/v/g (a pure
-  decay step — beta·v·k^T = 0) and their ghost output read is scattered back
-  to zero; kept rows run the real kernel on the same zero-gap context.
+  skipped rows. The indexer pool cannot select gap blocks (finite -1e4
+  sentinel: -9984 after the bf16 cast, ~7936 nats below any real score), and
+  the prefill sdpa mask also EXCLUDES gap keys explicitly (bool mask): zero
+  latents give gap keys logit exactly 0, which would otherwise dilute flat
+  queries' softmax by ~n_gap·exp(-max_logit).
+- KDA layers: exact by construction — the recurrence runs per kept SEGMENT
+  (the fused kernel, fed only real rows), and each maximal gap run of length
+  L advances the state in closed form with the run-length power of the null
+  gate g_null = exp(lb·sigmoid(A·dt_bias)) (a zero-content row's gate), with
+  the conv window zeroed across runs (a gap token contributes zeros).
 
-The final prompt row is always re-fed through ``model.hidden`` (the engine's
-own one-row path) so the generation seed is exactly what the serial engine
-would hold. Positions are implicit — cache.offset IS the position book — so
-the full-length offset advance makes every later mask/index correct.
+The generation seed is the feed's OWN last row, final-normed (what
+``model.hidden`` would return for it): the last prompt token is never fed
+twice. The MTP head's cache absorbs exactly the fed rows that HAVE a known
+successor, with their true next-tokens (oMLX's sparse absorb).
 """
 
 from __future__ import annotations
@@ -31,11 +34,12 @@ from tensorfold.families.glm5_next.model import KDA, KDA_K, MLACache, hc_expand,
 
 from .spec_scorer import SpecScorer, select_chunks, spec_keep_pct, spec_log
 
-GAP_IG = -1.0e4          # finite: a whole -inf 4-pack would NaN pool_blocks' softmax
+GAP_IG = -1.0e4          # bf16 -> -9984 exactly; finite so pool_blocks never NaNs
 
 
 def align_keep(keep: np.ndarray, kpool: int = 4) -> np.ndarray:
     """Kept mask -> feed mask: feed the last row of every gap run of >= kpool rows, plus the final row."""
+    assert len(keep) >= kpool, "align_keep needs at least kpool rows"
     keep = keep.copy()
     keep[-1] = True
     gap = ~keep
@@ -67,20 +71,60 @@ def _scatter_rows(real: mx.array, rel: mx.array, span: int, fill=None) -> mx.arr
     return out
 
 
-def _kda_branch(kda: KDA, c, z0: mx.array, rel: mx.array, span: int) -> mx.array:
-    """One KDA sub-layer over a fed chunk, advanced across the full span (gap rows decay only).
-    ``kda_rows`` applies f_b/g_b/o_norm/gating internally — its y is ready for o_proj."""
-    proj = _scatter_rows(project(z0, kda.in_proj, rows_exact=False), rel, span)
-    conv_prev = c.conv if c.conv is not None else mx.zeros((kda.taps - 1, 3 * kda.width), dtype=mx.bfloat16)
-    entry = c.ssm if c.ssm is not None else mx.zeros((1, kda.heads, kda.dim, kda.dim), dtype=mx.float32)
-    y, ssm, conv_new = KDA_K.kda_rows(kda, proj, conv_prev, entry)
-    out = project(y[rel], kda.o_proj, rows_exact=False)       # fed rows only; the state moved `span`
-    c.ssm, c.conv, c.offset, c._replay = ssm, mx.contiguous(conv_new), c.offset + span, None
-    return out
+def _g_null(kda: KDA) -> mx.array:
+    """A zero-content row's gate [H, D]: exp(lb · sigmoid(A·dt_bias))."""
+    return mx.exp(kda.cfg.linear_lower_bound
+                  * mx.sigmoid(kda.A * kda.dt_bias)).astype(mx.float32)
+
+
+def _kda_branch(kda: KDA, c, z0: mx.array, rows_abs: np.ndarray, span: int, w0: int) -> mx.array:
+    """One KDA sub-layer, exact over the full span.
+
+    The fused kernel runs per maximal run of CONSECUTIVE absolute fed positions; every
+    absolute gap of length L between runs advances the state in closed form with the
+    null-gate power (g_null^L — a zero-content row's exact attenuation), and the conv
+    window is zeroed across gaps (a gap token contributes zeros). ``kda_rows`` applies
+    f_b/g_b/o_norm/gating internally — its y is ready for o_proj.
+    """
+    width3 = 3 * kda.width
+    conv = c.conv if c.conv is not None else mx.zeros((kda.taps - 1, width3), dtype=mx.bfloat16)
+    entry = c.ssm if c.ssm is not None else mx.zeros((1, kda.heads, kda.dim, kda.dim),
+                                                     dtype=mx.float32)
+    gn = _g_null(kda)
+    outs: list[mx.array] = []
+
+    def run_seg(lo: int, hi: int) -> None:
+        nonlocal conv, entry
+        if hi > lo:
+            proj_seg = project(z0[lo:hi], kda.in_proj, rows_exact=False)
+            y, entry, conv = KDA_K.kda_rows(kda, proj_seg, conv, entry)
+            outs.append(project(y, kda.o_proj, rows_exact=False))
+
+    def decay(L: int) -> None:
+        nonlocal conv, entry
+        if L > 0:
+            entry = entry * mx.power(gn, float(L)).reshape(1, kda.heads, 1, kda.dim)
+            conv = mx.zeros((kda.taps - 1, width3), dtype=mx.bfloat16)
+
+    decay(int(rows_abs[0]) - w0)                          # leading gap (from the previous window)
+    seg = 0
+    for r in range(1, len(rows_abs)):
+        if rows_abs[r] != rows_abs[r - 1] + 1:
+            run_seg(seg, r)
+            decay(int(rows_abs[r]) - int(rows_abs[r - 1]) - 1)
+            seg = r
+    run_seg(seg, len(rows_abs))
+    c.ssm, c.conv = entry, conv
+    c.offset += span
+    c._replay = None
+    return mx.concatenate(outs) if len(outs) > 1 else outs[0]
 
 
 def _mla_branch(attn, c: MLACache, z0: mx.array, rel: mx.array, span: int) -> mx.array:
-    """One sparse-MLA sub-layer: full-span stamped append + kept-rows attention over the sparse cache."""
+    """One sparse-MLA sub-layer: full-span stamped append + kept-rows attention.
+
+    The sdpa mask excludes gap keys explicitly (bool mask, keep semantics).
+    """
     cfg = attn.cfg
     rows = int(z0.shape[0])
     parts = [project(z0, p, rows_exact=False) for p in (attn.q_a, attn.kv_a, attn.ik_proj, attn.iw)]
@@ -96,10 +140,14 @@ def _mla_branch(attn, c: MLACache, z0: mx.array, rel: mx.array, span: int) -> mx
     end = c.offset
     start = end - span
     k, v = attn.keys_values(c.keys[:end])                     # [H, end, dk]
-    q_pos = start + rel                                       # absolute positions of the kept rows
+    q_pos = start + rel
     causal = mx.arange(end)[None] <= q_pos[:, None]
+    valid = mx.zeros((end,), dtype=mx.bool_)
+    valid[:start] = True                                      # earlier windows: fed rows only
+    valid[start + rel] = True
+    mask = causal & valid[None, :]
     o = mx.fast.scaled_dot_product_attention(q.transpose(1, 0, 2)[None], k[None], v[None],
-                                             scale=attn.scale, mask=causal[None, None])
+                                             scale=attn.scale, mask=mask[None, None])
     out = o[0].transpose(1, 0, 2).reshape(rows, -1)
     return project(out, attn.o_proj, rows_exact=False)
 
@@ -114,13 +162,11 @@ def feed_sparse(model, tokens: list[int], keep_idx, cache: list, step: int = 204
     idx = np.nonzero(feed_mask)[0]
     pad_caches(cache)
     raws: list = []
-    abs_pos = idx
     for w0 in range(0, n, step):
         w1 = min(w0 + step, n)
-        rows = abs_pos[(abs_pos >= w0) & (abs_pos < w1)]      # fed rows of this ABSOLUTE window
-        span = w1 - w0                                        # the window advances the offset by its full length
-        begin_abs = w0
-        rel = mx.array((rows - begin_abs).astype(np.int64))
+        rows = idx[(idx >= w0) & (idx < w1)]                  # fed rows of this ABSOLUTE window
+        span = w1 - w0
+        rel = mx.array((rows - w0).astype(np.int64))
         chunk = [int(tokens[j]) for j in rows]
         x = model.embed_tokens(mx.array(chunk).reshape(-1).astype(mx.uint32))
         x = mx.contiguous(mx.broadcast_to(x[:, None, :], (len(chunk), model.args.hc_mult, x.shape[-1])))
@@ -128,13 +174,12 @@ def feed_sparse(model, tokens: list[int], keep_idx, cache: list, step: int = 204
             xc, post, comb = layer.attn_hc.split(x, False)
             z0 = mx.fast.rms_norm(xc, layer.in_norm, layer.eps)
             if isinstance(layer.attn, KDA):
-                ab = _kda_branch(layer.attn, c, z0, rel, span)
+                out = _kda_branch(layer.attn, c, z0, rows, span, w0)
             else:
-                ab = _mla_branch(layer.attn, c, z0, rel, span)
-            x = hc_expand(ab, x, post, comb, False)
+                out = _mla_branch(layer.attn, c, z0, rel, span)
+            x = hc_expand(out, x, post, comb, False)
             xc, post, comb = layer.ffn_hc.split(x, False)
-            z1 = mx.fast.rms_norm(xc, layer.post_norm, layer.eps)
-            fb = layer.mlp(z1, False)
+            fb = layer.mlp(mx.fast.rms_norm(xc, layer.post_norm, layer.eps), False)
             x = hc_expand(fb, x, post, comb, False)
             if i % 8 == 7:
                 mx.async_eval(x)
@@ -152,8 +197,7 @@ def feed_sparse(model, tokens: list[int], keep_idx, cache: list, step: int = 204
 
 def make_feed(glmflash):
     """Whole-prompt spec feed: ``feed(tokens, cache) -> hidden`` (the engine calls this for
-    prompts above the threshold; scoring, sparse feed, MTP absorb and the exact seed row
-    all happen here)."""
+    prompts above the threshold; scoring, sparse feed, MTP absorb and the seed all happen here)."""
     scorer = SpecScorer(glmflash)
 
     class Feed:
@@ -164,16 +208,14 @@ def make_feed(glmflash):
             importance, score_s = scorer.score_tokens(tokens)
             keep_idx = select_chunks(importance, keep_pct=spec_keep_pct())
             keep, feed_mask, raws = feed_sparse(glmflash.model, tokens, keep_idx, cache, step=2048)
-            # the generation seed is the feed's OWN last row (the final prompt token is fed by
-            # feed_sparse exactly once — re-feeding it through model.hidden would duplicate it
-            # in every cache and shift all attention); collapse its streams to raw hidden,
-            # then the engine's one-row path on the LAST TOKEN OF THE NEXT CHUNK handles decode.
-            # The MTP cache sees exactly the rows the backbone actually fed (oMLX's sparse
-            # absorb), with their true next-tokens, so drafts keep their prompt context.
+            # the MTP cache sees exactly the fed rows that HAVE a known successor (F6: the last
+            # fed row's next token is generated, not known)
             glmflash._raw = raws
             fed_pos = np.nonzero(feed_mask)[0]
-            nxt_tokens = np.array([tokens[min(j + 1, n - 1)] for j in fed_pos], dtype=np.int64)
-            glmflash.absorb_draft_context(raws, nxt_tokens, cache)
+            body = fed_pos[:-1]
+            if len(body):
+                nxt_tokens = np.array([tokens[min(j + 1, n - 1)] for j in body], dtype=np.int64)
+                glmflash.absorb_draft_context(raws[:-1], nxt_tokens, cache)
             # final-norm the feed's own last row: exactly what model.hidden returns for the seed
             hidden = mx.fast.rms_norm(raws[-1:], glmflash.model.norm,
                                       glmflash.model.args.rms_norm_eps)[None]

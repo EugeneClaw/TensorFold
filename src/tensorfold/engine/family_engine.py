@@ -45,6 +45,16 @@ def cache_arrays(cache: list[Any]) -> list[Any]:
     return arrays
 
 
+def _spec_threshold_safe() -> int:
+    """The GLM SpecPrefill activation threshold when the family provides it; else 0 (never sparse)."""
+    try:
+        from tensorfold.families.glm5_next import specprefill as _sp
+
+        return int(_sp.spec_threshold())
+    except Exception:
+        return 0
+
+
 class SerialEngine:
     """One token per forward for each live stream, streams taken in turn."""
 
@@ -121,6 +131,7 @@ class SerialEngine:
         if os.environ.get("TF_SPEC", "0") not in ("", "0", "false", "off"):
             from tensorfold.families.glm5_next import specprefill as sp
             if len(tokens) > sp.spec_threshold():
+                os.environ["TF_SPEC_FIRED"] = "1"       # F7: exactness harness asserts this is unset
                 return sp.make_feed(self.model).feed(tokens, cache)
         for begin in range(0, len(tokens), step):
             chunk = [int(t) for t in tokens[begin:begin + step]]
@@ -177,7 +188,11 @@ class SerialEngine:
         if not 0 <= start < len(stream.prompt_ids):
             raise ValueError(f"{stream.stream_id}: cached_tokens must leave a suffix to prefill")
         stream.history_checkpoints = []
-        for boundary in sorted({int(b) for b in checkpoints_at}):
+        import os as _os
+        spec_whole = (_os.environ.get("TF_SPEC", "0") not in ("", "0", "false", "off")
+                      and len(stream.prompt_ids) - start > _spec_threshold_safe())
+        checkpoints = () if spec_whole else checkpoints_at   # F9: sparse-fed caches never checkpoint
+        for boundary in sorted({int(b) for b in checkpoints}):
             if not start < boundary < len(stream.prompt_ids):
                 continue
             self._feed(stream.prompt_ids[start:boundary], work, following=stream.prompt_ids[boundary])
