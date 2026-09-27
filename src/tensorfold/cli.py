@@ -375,8 +375,14 @@ def cmd_serve(args: argparse.Namespace) -> int:
             sampling[key] = value
     snapshot_dir = None if str(args.snapshot_dir).lower() == "none" else Path(args.snapshot_dir).expanduser()
     # a snapshot's bits depend on the MLX version and the kernels that computed it: never mix them
+    # (E-076: they also depend on any cache-validity configuration — e.g. SpecPrefill's sparse feed
+    # changes what the cache rows MEAN, and a dense request that resumes such a block produces
+    # degraded output; measured in the ledger. Keep-signature env vars join the provenance.)
+    spec_cfg = "|".join(f"{k}={os.environ[k]}" for k in
+                        ("TF_SPEC", "TF_SPEC_KEEP", "TF_SPEC_THRESHOLD", "TF_SPEC_FLATNESS")
+                        if k in os.environ)
     model_id = (f"{model_dir.resolve()}|mlx={mx.__version__}|kernels={families.kernel_version(family, model)}"
-                f"|tensorfold={__version__}")
+                f"|tensorfold={__version__}" + (f"|spec={spec_cfg}" if spec_cfg else ""))
     gib = args.prompt_cache_gib
     if gib is None:
         ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")

@@ -245,9 +245,20 @@ def blocks_to_warm(directory: Path, model_id: str) -> list[list[int]]:
     before the first ``|``) count: another model's token ids mean nothing to this
     tokenizer. Returns the longest such token lists (a block that is a prefix of
     another is covered by warming the longer one), newest first.
+
+    E-076: cross-config warming is only safe when the two configurations differ in
+    THROUGHPUT (kernels, engine version), not in CACHE SEMANTICS. A block produced
+    by a different SpecPrefill signature (``|spec=...`` in the model id) resumed by
+    a dense server yields degraded output (measured), so spec-signed blocks are
+    excluded from warming entirely: a spec-configured server finds its own blocks
+    via the normal exact-prefix match.
     """
 
     if not directory.is_dir():
+        return []
+    if "|spec=" in model_id:
+        # never warm another config's blocks when this server's cache semantics are
+        # config-dependent (SpecPrefill); dense servers warming each other stay allowed
         return []
     have: list[list[int]] = []
     other: list[tuple[float, list[int]]] = []
