@@ -32,7 +32,7 @@ import numpy as np
 
 from tensorfold.families.glm5_next.model import KDA, KDA_K, MLACache, hc_expand, project
 
-from .spec_scorer import (SpecScorer, select_chunks, signal_stats, flatness,
+from .spec_scorer import (SpecScorer, select_chunks, signal_stats,
                           spec_keep_pct, spec_flatness_gate, spec_contrast_gate, spec_log)
 
 GAP_IG = -1.0e4          # bf16 -> -9984 exactly; finite so pool_blocks never NaNs
@@ -215,8 +215,9 @@ def make_feed(glmflash):
                 # selection would be near-random and drop retrieval-critical chunks
                 # with p ~= 1 - keep_pct. Dense fallback = stock exact feed.
                 if spec_log():
-                    print(f"[spec] skip (flatness {flat:.3f} >= {gate:.2f}, "
-                          f"contrast {contrast:.2f}): {n} tokens dense; "
+                    arm = "flatness" if flat >= gate else "contrast"
+                    print(f"[spec] skip ({arm}: flat {flat:.3f} vs {gate:.2f}, "
+                          f"contrast {contrast:.2f} vs {cgate:.2f}): {n} tokens dense; "
                           f"score {score_s:.2f}s wasted", flush=True)
                 return None
             keep_idx = select_chunks(importance, keep_pct=spec_keep_pct())

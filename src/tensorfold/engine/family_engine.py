@@ -135,9 +135,8 @@ class SerialEngine:
                 if fed is not None:
                     os.environ["TF_SPEC_FIRED"] = "1"   # F7: exactness harness asserts this is unset
                     return fed
-                if sp.spec_log():
-                    print("[spec] dense fallback (flat gate)", flush=True)
-                # fall through to the stock exact loop below
+                # gate skip: spec_feed already logged the decision — fall through to
+                # the stock exact loop below (F5a: no duplicate log line here)
         for begin in range(0, len(tokens), step):
             chunk = [int(t) for t in tokens[begin:begin + step]]
             hidden = self.model.hidden(mx.array([chunk], dtype=mx.uint32), cache)

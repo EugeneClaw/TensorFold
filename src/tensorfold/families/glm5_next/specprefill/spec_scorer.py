@@ -48,16 +48,35 @@ def spec_log() -> bool:
     return _flag("TF_SPEC_LOG", "1") not in ("", "0", "false", "off")
 
 
+def _float_flag(name: str, default: float) -> float:
+    """Tolerant float env parse (E-076 review F1): a typo or empty string must never
+    500 the resident server on every above-threshold prompt; non-finite values are
+    rejected explicitly (float('nan') parses fine and would silently disable a gate)."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw.strip().replace(",", "."))
+    except ValueError:
+        print(f"[spec] ignoring non-numeric {name}={raw!r}; using {default}", flush=True)
+        return default
+    if value != value or value in (float("inf"), float("-inf")):
+        print(f"[spec] ignoring non-finite {name}={raw!r}; using {default}", flush=True)
+        return default
+    return value
+
+
 def spec_flatness_gate() -> float:
     """Skip spec when chunk-importance entropy exceeds this (scorer has no signal).
-    1.0 disables the gate (legacy behavior: always spec above threshold)."""
-    return float(_flag("TF_SPEC_FLATNESS", "1.0"))
+    1.0 ≈ disabled: exact-uniform float noise (flat == 1.0000001) may still fall
+    back on a measure-zero prompt class — harmless, the dense path is exact."""
+    return _float_flag("TF_SPEC_FLATNESS", 1.0)
 
 
 def spec_contrast_gate() -> float:
     """Skip spec when max/median chunk importance is below this (no outlier = no
     distinctive content for the scorer to lock onto). Default 1.0 = disabled."""
-    return float(_flag("TF_SPEC_CONTRAST", "1.0"))
+    return _float_flag("TF_SPEC_CONTRAST", 1.0)
 
 
 class SpecScorer:
@@ -198,7 +217,7 @@ def signal_stats(importance: mx.array, chunk_size: int = 32) -> tuple[float, flo
     imp = importance[: n_chunks * chunk_size] if pad <= 0 else mx.pad(importance, [(0, pad)])
     means = mx.mean(imp.reshape(n_chunks, chunk_size), axis=1).astype(mx.float32)
     total = mx.sum(means).item()
-    if total <= 0.0:
+    if not (total > 0.0):          # catches NaN and <=0 (E-076 review F4)
         return 1.0, 1.0
     p = means / total
     ent = -mx.sum(p * mx.log(p + 1e-12)).item()
