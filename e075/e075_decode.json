@@ -1,0 +1,189 @@
+{
+ "model": "76add2a341a1cd90ad0e86bb69839ea9c35827c6",
+ "base": "http://127.0.0.1:8010/v1",
+ "n": 10,
+ "short": [
+  {
+   "ttft": 1.291,
+   "wall": 5.785,
+   "decode_s": 4.494,
+   "chars": 1570,
+   "chunks": 226,
+   "cps": 349.3,
+   "text_head": "The user wants a detailed product description for a futuristic electric kettle. "
+  },
+  {
+   "ttft": 0.021,
+   "wall": 4.553,
+   "decode_s": 4.532,
+   "chars": 1570,
+   "chunks": 226,
+   "cps": 346.4,
+   "text_head": "The user wants a detailed product description for a futuristic electric kettle. "
+  },
+  {
+   "ttft": 0.022,
+   "wall": 4.553,
+   "decode_s": 4.531,
+   "chars": 1570,
+   "chunks": 226,
+   "cps": 346.5,
+   "text_head": "The user wants a detailed product description for a futuristic electric kettle. "
+  },
+  {
+   "ttft": 0.022,
+   "wall": 4.555,
+   "decode_s": 4.533,
+   "chars": 1570,
+   "chunks": 226,
+   "cps": 346.3,
+   "text_head": "The user wants a detailed product description for a futuristic electric kettle. "
+  },
+  {
+   "ttft": 0.022,
+   "wall": 4.555,
+   "decode_s": 4.533,
+   "chars": 1570,
+   "chunks": 226,
+   "cps": 346.3,
+   "text_head": "The user wants a detailed product description for a futuristic electric kettle. "
+  },
+  {
+   "ttft": 0.022,
+   "wall": 4.56,
+   "decode_s": 4.538,
+   "chars": 1570,
+   "chunks": 226,
+   "cps": 346.0,
+   "text_head": "The user wants a detailed product description for a futuristic electric kettle. "
+  },
+  {
+   "ttft": 0.022,
+   "wall": 4.57,
+   "decode_s": 4.549,
+   "chars": 1570,
+   "chunks": 226,
+   "cps": 345.2,
+   "text_head": "The user wants a detailed product description for a futuristic electric kettle. "
+  },
+  {
+   "ttft": 0.022,
+   "wall": 4.557,
+   "decode_s": 4.535,
+   "chars": 1570,
+   "chunks": 226,
+   "cps": 346.2,
+   "text_head": "The user wants a detailed product description for a futuristic electric kettle. "
+  },
+  {
+   "ttft": 0.022,
+   "wall": 4.556,
+   "decode_s": 4.534,
+   "chars": 1570,
+   "chunks": 226,
+   "cps": 346.3,
+   "text_head": "The user wants a detailed product description for a futuristic electric kettle. "
+  },
+  {
+   "ttft": 0.022,
+   "wall": 4.556,
+   "decode_s": 4.534,
+   "chars": 1570,
+   "chunks": 226,
+   "cps": 346.3,
+   "text_head": "The user wants a detailed product description for a futuristic electric kettle. "
+  }
+ ],
+ "mid": [
+  {
+   "ttft": 2.823,
+   "wall": 5.934,
+   "decode_s": 3.111,
+   "chars": 1191,
+   "chunks": 141,
+   "cps": 382.9,
+   "text_head": "The user has pasted the same two sentences repeated many times, and asks me to s"
+  },
+  {
+   "ttft": 0.028,
+   "wall": 3.14,
+   "decode_s": 3.112,
+   "chars": 1191,
+   "chunks": 141,
+   "cps": 382.7,
+   "text_head": "The user has pasted the same two sentences repeated many times, and asks me to s"
+  },
+  {
+   "ttft": 0.029,
+   "wall": 3.14,
+   "decode_s": 3.111,
+   "chars": 1191,
+   "chunks": 141,
+   "cps": 382.8,
+   "text_head": "The user has pasted the same two sentences repeated many times, and asks me to s"
+  },
+  {
+   "ttft": 0.028,
+   "wall": 3.141,
+   "decode_s": 3.113,
+   "chars": 1191,
+   "chunks": 141,
+   "cps": 382.6,
+   "text_head": "The user has pasted the same two sentences repeated many times, and asks me to s"
+  },
+  {
+   "ttft": 0.029,
+   "wall": 3.14,
+   "decode_s": 3.112,
+   "chars": 1191,
+   "chunks": 141,
+   "cps": 382.8,
+   "text_head": "The user has pasted the same two sentences repeated many times, and asks me to s"
+  },
+  {
+   "ttft": 0.029,
+   "wall": 3.143,
+   "decode_s": 3.114,
+   "chars": 1191,
+   "chunks": 141,
+   "cps": 382.4,
+   "text_head": "The user has pasted the same two sentences repeated many times, and asks me to s"
+  },
+  {
+   "ttft": 0.028,
+   "wall": 3.141,
+   "decode_s": 3.113,
+   "chars": 1191,
+   "chunks": 141,
+   "cps": 382.6,
+   "text_head": "The user has pasted the same two sentences repeated many times, and asks me to s"
+  },
+  {
+   "ttft": 0.028,
+   "wall": 3.141,
+   "decode_s": 3.113,
+   "chars": 1191,
+   "chunks": 141,
+   "cps": 382.6,
+   "text_head": "The user has pasted the same two sentences repeated many times, and asks me to s"
+  },
+  {
+   "ttft": 0.028,
+   "wall": 3.142,
+   "decode_s": 3.113,
+   "chars": 1191,
+   "chunks": 141,
+   "cps": 382.5,
+   "text_head": "The user has pasted the same two sentences repeated many times, and asks me to s"
+  },
+  {
+   "ttft": 0.028,
+   "wall": 3.143,
+   "decode_s": 3.114,
+   "chars": 1191,
+   "chunks": 141,
+   "cps": 382.4,
+   "text_head": "The user has pasted the same two sentences repeated many times, and asks me to s"
+  }
+ ]
+}

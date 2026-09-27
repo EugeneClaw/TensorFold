@@ -1,0 +1,13 @@
+[ 6000 tok @  25%] ptok=6024 wall=  7.0s PASS head='The user has sent a long stream of words with embedded "RECO'
+[ 6000 tok @  50%] ptok=6042 wall=  6.0s PASS head='The user has sent me a long stream of text consisting of ran'
+[ 6000 tok @  75%] ptok=6038 wall=  6.0s PASS head='The user has sent a long stream of words with embedded "RECO'
+[12000 tok @  25%] ptok=11929 wall=  6.2s FAIL head="Looking at this prompt, I need to figure out what's being as"
+[12000 tok @  50%] ptok=11933 wall=  6.2s FAIL head="Looking at this task, I need to figure out what's being aske"
+[12000 tok @  75%] ptok=12001 wall=  6.1s PASS head='Looking at this text, I need to find a hidden message. The t'
+[24000 tok @  25%] ptok=23950 wall= 12.5s FAIL head='The user wants me to find the record code in this text.\nThe '
+[24000 tok @  50%] ptok=23943 wall= 12.5s FAIL head='The user has provided a long list of words and asked me to "'
+[24000 tok @  75%] ptok=23911 wall= 12.3s PASS head='We need answer user? They provided huge text of random words'
+[30000 tok @  25%] ptok=29899 wall= 16.4s PASS head="</think>I notice you've shared a long sequence of words, man"
+[30000 tok @  50%] ptok=29833 wall= 15.9s PASS head='The user has given me a long text of random words and a "rec'
+[30000 tok @  75%] ptok=29785 wall= 15.9s PASS head='I need to extract the record code from this text. The text a'
+LADDER: 8/12 PASS

@@ -1,0 +1,158 @@
+{
+ "arm": "omlx-spec-k04",
+ "aggregate": 0.75,
+ "per_task": {
+  "recall": 1.0,
+  "constraints": 0.0,
+  "summary": 1.0,
+  "toolcall": 0.5,
+  "codeedit": 1.0,
+  "arith": 1.0
+ },
+ "rows": [
+  {
+   "task": "recall",
+   "rep": 0,
+   "arm": "omlx-spec-k04",
+   "ttft_s": 13.01,
+   "wall_s": 13.94,
+   "ptok": 0,
+   "ctok": 0,
+   "score": 1.0,
+   "detail": "4/4 facts",
+   "text_head": "1. Apprentice Fenwick owes the baker 2 shillings.\n2. Engineer Rhoda Vail wears a titanium ring on her left thumb.\n3. Dr. Yuki Tananaka patented the amber centrifuge in 2019.\n4. Harbour bells ring 9 ti"
+  },
+  {
+   "task": "recall",
+   "rep": 1,
+   "arm": "omlx-spec-k04",
+   "ttft_s": 9.39,
+   "wall_s": 10.29,
+   "ptok": 0,
+   "ctok": 0,
+   "score": 1.0,
+   "detail": "4/4 facts",
+   "text_head": "1. The Greyfall Ridge map is in the purple ledger's back cover.\n2. The waterwheel was replaced in 1907 by the Ashford family.\n3. The night train to Veldsted departs at 11 minutes past midnight.\n4. The"
+  },
+  {
+   "task": "constraints",
+   "rep": 0,
+   "arm": "omlx-spec-k04",
+   "ttft_s": 19.01,
+   "wall_s": 20.07,
+   "ptok": 0,
+   "ctok": 0,
+   "score": 0.0,
+   "detail": "The word \"kettle\" does not appear anywhe",
+   "text_head": "The word \"kettle\" does not appear anywhere in the notes, so there is no number associated with it. The only numbers present are in the embedded sentences (9 bells, June 4th, 2019, 4-4-1), none of whic"
+  },
+  {
+   "task": "constraints",
+   "rep": 1,
+   "arm": "omlx-spec-k04",
+   "ttft_s": 12.52,
+   "wall_s": 12.82,
+   "ptok": 0,
+   "ctok": 0,
+   "score": 0.0,
+   "detail": "No 'kettle' appears anywhere in the note",
+   "text_head": "No 'kettle' appears anywhere in the notes, so there is no number to give."
+  },
+  {
+   "task": "summary",
+   "rep": 0,
+   "arm": "omlx-spec-k04",
+   "ttft_s": 12.1,
+   "wall_s": 14.37,
+   "ptok": 0,
+   "ctok": 0,
+   "score": 1.0,
+   "detail": "3 sents, 3 w/ facts",
+   "text_head": "Marabel Quinstone keeps the saffron keycard in drawer 42. The night train to Veldsted departs at 11 minutes past midnight. The ferry 'Salt Maiden' carries at most 63 passengers."
+  },
+  {
+   "task": "summary",
+   "rep": 1,
+   "arm": "omlx-spec-k04",
+   "ttft_s": 23.06,
+   "wall_s": 23.79,
+   "ptok": 0,
+   "ctok": 0,
+   "score": 1.0,
+   "detail": "3 sents, 2 w/ facts",
+   "text_head": "Project ZEPHYRION-9 went live on the fourth of June. Sergeant Pikeson's callsign is BADGER-FIVE. The waterwheel was replaced in 1907 by the Ashford family."
+  },
+  {
+   "task": "toolcall",
+   "rep": 0,
+   "arm": "omlx-spec-k04",
+   "ttft_s": 7.41,
+   "wall_s": 7.56,
+   "ptok": 0,
+   "ctok": 0,
+   "score": 0.5,
+   "detail": "1 valid JSON lines",
+   "text_head": "{\"item\": \"amber centrifuge\", \"value\": \"2019\"}"
+  },
+  {
+   "task": "toolcall",
+   "rep": 1,
+   "arm": "omlx-spec-k04",
+   "ttft_s": 7.01,
+   "wall_s": 7.16,
+   "ptok": 0,
+   "ctok": 0,
+   "score": 0.5,
+   "detail": "1 valid JSON lines",
+   "text_head": "{\"item\": \"Copper kettle\", \"value\": \"1742\"}"
+  },
+  {
+   "task": "codeedit",
+   "rep": 0,
+   "arm": "omlx-spec-k04",
+   "ttft_s": 4.58,
+   "wall_s": 5.05,
+   "ptok": 0,
+   "ctok": 0,
+   "score": 1.0,
+   "detail": "rename+keep=1.0",
+   "text_head": "```python\ndef filter_strong_items(items, threshold):\n    out = []\n    for item in items:\n        if item.score > threshold:\n            out.append(item)\n    return out\n```"
+  },
+  {
+   "task": "codeedit",
+   "rep": 1,
+   "arm": "omlx-spec-k04",
+   "ttft_s": 4.14,
+   "wall_s": 4.5,
+   "ptok": 0,
+   "ctok": 0,
+   "score": 1.0,
+   "detail": "rename+keep=1.0",
+   "text_head": "```python\ndef filter_strong_items(items, threshold):\n    out = []\n    for item in items:\n        if item.score > threshold:\n            out.append(item)\n    return out\n```"
+  },
+  {
+   "task": "arith",
+   "rep": 0,
+   "arm": "omlx-spec-k04",
+   "ttft_s": 3.19,
+   "wall_s": 3.19,
+   "ptok": 0,
+   "ctok": 0,
+   "score": 1.0,
+   "detail": "got 2435 (want 2435)",
+   "text_head": "2435"
+  },
+  {
+   "task": "arith",
+   "rep": 1,
+   "arm": "omlx-spec-k04",
+   "ttft_s": 3.14,
+   "wall_s": 3.15,
+   "ptok": 0,
+   "ctok": 0,
+   "score": 1.0,
+   "detail": "got 2435 (want 2435)",
+   "text_head": "2435"
+  }
+ ]
+}

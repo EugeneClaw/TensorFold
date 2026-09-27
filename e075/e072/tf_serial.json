@@ -1,0 +1,161 @@
+{
+ "drafted": false,
+ "cold": {
+  "1000": [
+   {
+    "wall": 1.369,
+    "prompt_tokens": 1593,
+    "cached": 0,
+    "fresh_toks": 1593,
+    "prefill_tps": 1163.4,
+    "target": 1000
+   },
+   {
+    "wall": 1.362,
+    "prompt_tokens": 1567,
+    "cached": 0,
+    "fresh_toks": 1567,
+    "prefill_tps": 1150.2,
+    "target": 1000
+   },
+   {
+    "wall": 1.384,
+    "prompt_tokens": 1611,
+    "cached": 0,
+    "fresh_toks": 1611,
+    "prefill_tps": 1163.7,
+    "target": 1000
+   }
+  ],
+  "4000": [
+   {
+    "wall": 5.57,
+    "prompt_tokens": 6311,
+    "cached": 0,
+    "fresh_toks": 6311,
+    "prefill_tps": 1133.0,
+    "target": 4000
+   },
+   {
+    "wall": 5.413,
+    "prompt_tokens": 6228,
+    "cached": 0,
+    "fresh_toks": 6228,
+    "prefill_tps": 1150.7,
+    "target": 4000
+   },
+   {
+    "wall": 5.473,
+    "prompt_tokens": 6257,
+    "cached": 0,
+    "fresh_toks": 6257,
+    "prefill_tps": 1143.2,
+    "target": 4000
+   }
+  ],
+  "9000": [
+   {
+    "wall": 12.903,
+    "prompt_tokens": 13950,
+    "cached": 0,
+    "fresh_toks": 13950,
+    "prefill_tps": 1081.1,
+    "target": 9000
+   },
+   {
+    "wall": 13.138,
+    "prompt_tokens": 14077,
+    "cached": 0,
+    "fresh_toks": 14077,
+    "prefill_tps": 1071.5,
+    "target": 9000
+   },
+   {
+    "wall": 13.084,
+    "prompt_tokens": 14052,
+    "cached": 0,
+    "fresh_toks": 14052,
+    "prefill_tps": 1074.0,
+    "target": 9000
+   }
+  ],
+  "16000": [
+   {
+    "wall": 28.731,
+    "prompt_tokens": 24887,
+    "cached": 0,
+    "fresh_toks": 24887,
+    "prefill_tps": 866.2,
+    "target": 16000
+   },
+   {
+    "wall": 28.7,
+    "prompt_tokens": 24912,
+    "cached": 0,
+    "fresh_toks": 24912,
+    "prefill_tps": 868.0,
+    "target": 16000
+   },
+   {
+    "wall": 28.745,
+    "prompt_tokens": 24913,
+    "cached": 0,
+    "fresh_toks": 24913,
+    "prefill_tps": 866.7,
+    "target": 16000
+   }
+  ],
+  "20000": [
+   {
+    "wall": 40.568,
+    "prompt_tokens": 31084,
+    "cached": 0,
+    "fresh_toks": 31084,
+    "prefill_tps": 766.2,
+    "target": 20000
+   },
+   {
+    "wall": 40.588,
+    "prompt_tokens": 31144,
+    "cached": 0,
+    "fresh_toks": 31144,
+    "prefill_tps": 767.3,
+    "target": 20000
+   },
+   {
+    "wall": 40.551,
+    "prompt_tokens": 31232,
+    "cached": 0,
+    "fresh_toks": 31232,
+    "prefill_tps": 770.2,
+    "target": 20000
+   }
+  ]
+ },
+ "multiturn": [
+  {
+   "wall": 12.185,
+   "prompt_tokens": 12550,
+   "cached": 0,
+   "fresh_toks": 12550,
+   "prefill_tps": 1030.0,
+   "turn": 0
+  },
+  {
+   "wall": 12.522,
+   "prompt_tokens": 12912,
+   "cached": 0,
+   "fresh_toks": 12912,
+   "prefill_tps": 1031.2,
+   "turn": 1
+  },
+  {
+   "wall": 12.845,
+   "prompt_tokens": 13285,
+   "cached": 0,
+   "fresh_toks": 13285,
+   "prefill_tps": 1034.3,
+   "turn": 2
+  }
+ ]
+}

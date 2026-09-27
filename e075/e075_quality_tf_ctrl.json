@@ -1,0 +1,158 @@
+{
+ "arm": "tf-control-nospec",
+ "aggregate": 0.833,
+ "per_task": {
+  "recall": 1.0,
+  "constraints": 0.5,
+  "summary": 1.0,
+  "toolcall": 0.5,
+  "codeedit": 1.0,
+  "arith": 1.0
+ },
+ "rows": [
+  {
+   "task": "recall",
+   "rep": 0,
+   "arm": "tf-control-nospec",
+   "ttft_s": 3.11,
+   "wall_s": 6.77,
+   "ptok": 2356,
+   "ctok": 350,
+   "score": 1.0,
+   "detail": "4/4 facts",
+   "text_head": "The user has provided a long text full of noise words, with embedded facts:\n\n1. \"Project ZEPHYRION-9 went live on the fourth of June.\" \u2014 the answer should quote exactly ending with \"June.\" The instruc"
+  },
+  {
+   "task": "recall",
+   "rep": 1,
+   "arm": "tf-control-nospec",
+   "ttft_s": 2.18,
+   "wall_s": 8.58,
+   "ptok": 2373,
+   "ctok": 554,
+   "score": 1.0,
+   "detail": "4/4 facts",
+   "text_head": "The user has provided a long text with various sentences embedded among the noise. They want answers to 4 items, one line per item, quoting exactly:\n\n1. dawn. \u2014 \"Old Tomas feeds exactly 17 gulls every"
+  },
+  {
+   "task": "constraints",
+   "rep": 0,
+   "arm": "tf-control-nospec",
+   "ttft_s": 1.66,
+   "wall_s": 4.12,
+   "ptok": 1950,
+   "ctok": 205,
+   "score": 1.0,
+   "detail": "1,742",
+   "text_head": "We need answer question. Need parse notes. User gives huge text with random words and some \"memory\" statements. Asked: \"From the notes only: which single item number (drawer, count or time) appears wi"
+  },
+  {
+   "task": "constraints",
+   "rep": 1,
+   "arm": "tf-control-nospec",
+   "ttft_s": 1.67,
+   "wall_s": 7.33,
+   "ptok": 1967,
+   "ctok": 488,
+   "score": 0.0,
+   "detail": "\"kettle\" doesn't appear anywhere in the ",
+   "text_head": "The user is asking about a \"kettle\" item from the notes. Let me search through the text for \"kettle\".\n\nLooking through the text... I see lots of words about performance, architecture, benchmark, etc. "
+  },
+  {
+   "task": "summary",
+   "rep": 0,
+   "arm": "tf-control-nospec",
+   "ttft_s": 2.43,
+   "wall_s": 19.59,
+   "ptok": 2694,
+   "ctok": 1380,
+   "score": 1.0,
+   "detail": "3 sents, 2 w/ facts",
+   "text_head": "The user has given a long stream of mostly nonsense/keyword text (looks like generated filler about ML performance topics: kernels, latency, quantization, prefill, decode, tokens, etc.), interspersed "
+  },
+  {
+   "task": "summary",
+   "rep": 1,
+   "arm": "tf-control-nospec",
+   "ttft_s": 2.41,
+   "wall_s": 27.02,
+   "ptok": 2682,
+   "ctok": 2048,
+   "score": 1.0,
+   "detail": "83 sents, 38 w/ facts",
+   "text_head": "The user has given me a long stream of text that appears to be mostly random technical jargon (words like \"memory,\" \"quantization,\" \"tokens,\" \"GPU,\" \"latency,\" etc.) interspersed with a few concrete f"
+  },
+  {
+   "task": "toolcall",
+   "rep": 0,
+   "arm": "tf-control-nospec",
+   "ttft_s": 1.48,
+   "wall_s": 6.49,
+   "ptok": 1677,
+   "ctok": 441,
+   "score": 0.5,
+   "detail": "1 valid JSON lines",
+   "text_head": "The user wants me to find notes containing the word 'inventory' or a number over 1000, and emit JSON objects for each.\n\nLet me scan through the text:\n\n1. \"Harbour bells ring 9 times when the tide turn"
+  },
+  {
+   "task": "toolcall",
+   "rep": 1,
+   "arm": "tf-control-nospec",
+   "ttft_s": 1.47,
+   "wall_s": 15.24,
+   "ptok": 1679,
+   "ctok": 1129,
+   "score": 0.5,
+   "detail": "1 valid JSON lines",
+   "text_head": "The user wants me to find notes containing the word 'inventory' or a number over 1000, and emit JSON objects for those notes.\n\nLet me scan through the text for:\n1. The word 'inventory'\n2. Numbers over"
+  },
+  {
+   "task": "codeedit",
+   "rep": 0,
+   "arm": "tf-control-nospec",
+   "ttft_s": 1.45,
+   "wall_s": 3.65,
+   "ptok": 1654,
+   "ctok": 217,
+   "score": 1.0,
+   "detail": "rename+keep=1.0",
+   "text_head": "The user wants me to rewrite the function, renaming it to `filter_strong_items` while keeping the threshold comparison. The long text after the function appears to be noise/distractor text (with one e"
+  },
+  {
+   "task": "codeedit",
+   "rep": 1,
+   "arm": "tf-control-nospec",
+   "ttft_s": 1.44,
+   "wall_s": 3.07,
+   "ptok": 1657,
+   "ctok": 179,
+   "score": 1.0,
+   "detail": "rename+keep=1.0",
+   "text_head": "The user wants me to rewrite the function, renaming it to `filter_strong_items` while keeping the threshold comparison. The notes are just noise/distractor text. I should reply with only the rewritten"
+  },
+  {
+   "task": "arith",
+   "rep": 0,
+   "arm": "tf-control-nospec",
+   "ttft_s": 1.94,
+   "wall_s": 2.73,
+   "ptok": 2118,
+   "ctok": 71,
+   "score": 1.0,
+   "detail": "got 2435 (want 2435)",
+   "text_head": "The user wants me to compute 1240 + 380 - 155 + 970.\n\n1240 + 380 = 1620\n1620 - 155 = 1465\n1465 + 970 = 2435\n\nThe answer is 2435. They want the number only.</think>2435"
+  },
+  {
+   "task": "arith",
+   "rep": 1,
+   "arm": "tf-control-nospec",
+   "ttft_s": 1.93,
+   "wall_s": 2.72,
+   "ptok": 2121,
+   "ctok": 71,
+   "score": 1.0,
+   "detail": "got 2435 (want 2435)",
+   "text_head": "The user wants me to compute 1240 + 380 - 155 + 970.\n\n1240 + 380 = 1620\n1620 - 155 = 1465\n1465 + 970 = 2435\n\nThe answer is 2435. They want the number only.</think>2435"
+  }
+ ]
+}

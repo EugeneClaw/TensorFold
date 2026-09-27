@@ -1,0 +1,136 @@
+{
+ "drafted": false,
+ "cold": {
+  "1000": [
+   {
+    "wall": 1.366,
+    "prompt_tokens": 1595,
+    "cached": 0,
+    "fresh_toks": 1595,
+    "prefill_tps": 1167.3,
+    "target": 1000
+   },
+   {
+    "wall": 1.358,
+    "prompt_tokens": 1575,
+    "cached": 0,
+    "fresh_toks": 1575,
+    "prefill_tps": 1160.2,
+    "target": 1000
+   },
+   {
+    "wall": 1.359,
+    "prompt_tokens": 1576,
+    "cached": 0,
+    "fresh_toks": 1576,
+    "prefill_tps": 1159.4,
+    "target": 1000
+   }
+  ],
+  "4000": [
+   {
+    "wall": 5.393,
+    "prompt_tokens": 6192,
+    "cached": 0,
+    "fresh_toks": 6192,
+    "prefill_tps": 1148.1,
+    "target": 4000
+   },
+   {
+    "wall": 5.539,
+    "prompt_tokens": 6278,
+    "cached": 0,
+    "fresh_toks": 6278,
+    "prefill_tps": 1133.4,
+    "target": 4000
+   },
+   {
+    "wall": 5.496,
+    "prompt_tokens": 6264,
+    "cached": 0,
+    "fresh_toks": 6264,
+    "prefill_tps": 1139.7,
+    "target": 4000
+   }
+  ],
+  "9000": [
+   {
+    "wall": 7.495,
+    "prompt_tokens": 14026,
+    "cached": 0,
+    "fresh_toks": 14026,
+    "prefill_tps": 1871.4,
+    "target": 9000
+   },
+   {
+    "wall": 7.478,
+    "prompt_tokens": 14048,
+    "cached": 0,
+    "fresh_toks": 14048,
+    "prefill_tps": 1878.7,
+    "target": 9000
+   },
+   {
+    "wall": 7.688,
+    "prompt_tokens": 14104,
+    "cached": 0,
+    "fresh_toks": 14104,
+    "prefill_tps": 1834.4,
+    "target": 9000
+   }
+  ],
+  "16000": [
+   {
+    "wall": 14.77,
+    "prompt_tokens": 24985,
+    "cached": 0,
+    "fresh_toks": 24985,
+    "prefill_tps": 1691.6,
+    "target": 16000
+   },
+   {
+    "wall": 14.601,
+    "prompt_tokens": 24939,
+    "cached": 0,
+    "fresh_toks": 24939,
+    "prefill_tps": 1708.1,
+    "target": 16000
+   },
+   {
+    "wall": 14.723,
+    "prompt_tokens": 24942,
+    "cached": 0,
+    "fresh_toks": 24942,
+    "prefill_tps": 1694.0,
+    "target": 16000
+   }
+  ],
+  "20000": [
+   {
+    "wall": 19.294,
+    "prompt_tokens": 31217,
+    "cached": 0,
+    "fresh_toks": 31217,
+    "prefill_tps": 1618.0,
+    "target": 20000
+   },
+   {
+    "wall": 19.07,
+    "prompt_tokens": 31191,
+    "cached": 0,
+    "fresh_toks": 31191,
+    "prefill_tps": 1635.6,
+    "target": 20000
+   },
+   {
+    "wall": 19.174,
+    "prompt_tokens": 31135,
+    "cached": 0,
+    "fresh_toks": 31135,
+    "prefill_tps": 1623.8,
+    "target": 20000
+   }
+  ]
+ },
+ "multiturn": {}
+}

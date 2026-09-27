@@ -1,0 +1,162 @@
+{
+ "base": "http://127.0.0.1:8008/v1",
+ "model": "GLM-5.3-Flash-Q4/8",
+ "cold": {
+  "1000": [
+   {
+    "wall": 1.843,
+    "prompt_tokens": 1591,
+    "cached": 0,
+    "fresh_toks": 1591,
+    "prefill_tps": 863.5,
+    "target": 1000
+   },
+   {
+    "wall": 1.473,
+    "prompt_tokens": 1579,
+    "cached": 0,
+    "fresh_toks": 1579,
+    "prefill_tps": 1072.3,
+    "target": 1000
+   },
+   {
+    "wall": 1.472,
+    "prompt_tokens": 1576,
+    "cached": 0,
+    "fresh_toks": 1576,
+    "prefill_tps": 1071.0,
+    "target": 1000
+   }
+  ],
+  "4000": [
+   {
+    "wall": 7.538,
+    "prompt_tokens": 6247,
+    "cached": 0,
+    "fresh_toks": 6247,
+    "prefill_tps": 828.8,
+    "target": 4000
+   },
+   {
+    "wall": 8.135,
+    "prompt_tokens": 6238,
+    "cached": 2048,
+    "fresh_toks": 4190,
+    "prefill_tps": 515.0,
+    "target": 4000
+   },
+   {
+    "wall": 6.747,
+    "prompt_tokens": 6270,
+    "cached": 2048,
+    "fresh_toks": 4222,
+    "prefill_tps": 625.7,
+    "target": 4000
+   }
+  ],
+  "9000": [
+   {
+    "wall": 10.109,
+    "prompt_tokens": 14017,
+    "cached": 0,
+    "fresh_toks": 14017,
+    "prefill_tps": 1386.6,
+    "target": 9000
+   },
+   {
+    "wall": 5.386,
+    "prompt_tokens": 13989,
+    "cached": 0,
+    "fresh_toks": 13989,
+    "prefill_tps": 2597.1,
+    "target": 9000
+   },
+   {
+    "wall": 5.418,
+    "prompt_tokens": 14002,
+    "cached": 0,
+    "fresh_toks": 14002,
+    "prefill_tps": 2584.5,
+    "target": 9000
+   }
+  ],
+  "16000": [
+   {
+    "wall": 9.638,
+    "prompt_tokens": 24902,
+    "cached": 0,
+    "fresh_toks": 24902,
+    "prefill_tps": 2583.7,
+    "target": 16000
+   },
+   {
+    "wall": 9.621,
+    "prompt_tokens": 25005,
+    "cached": 0,
+    "fresh_toks": 25005,
+    "prefill_tps": 2599.0,
+    "target": 16000
+   },
+   {
+    "wall": 9.64,
+    "prompt_tokens": 24907,
+    "cached": 0,
+    "fresh_toks": 24907,
+    "prefill_tps": 2583.6,
+    "target": 16000
+   }
+  ],
+  "24000": [
+   {
+    "wall": 14.094,
+    "prompt_tokens": 37388,
+    "cached": 0,
+    "fresh_toks": 37388,
+    "prefill_tps": 2652.8,
+    "target": 24000
+   },
+   {
+    "wall": 14.589,
+    "prompt_tokens": 37420,
+    "cached": 0,
+    "fresh_toks": 37420,
+    "prefill_tps": 2565.0,
+    "target": 24000
+   },
+   {
+    "wall": 14.123,
+    "prompt_tokens": 37399,
+    "cached": 0,
+    "fresh_toks": 37399,
+    "prefill_tps": 2648.2,
+    "target": 24000
+   }
+  ]
+ },
+ "multiturn": [
+  {
+   "wall": 5.654,
+   "prompt_tokens": 12514,
+   "cached": 0,
+   "fresh_toks": 12514,
+   "prefill_tps": 2213.4,
+   "turn": 0
+  },
+  {
+   "wall": 5.849,
+   "prompt_tokens": 12883,
+   "cached": 0,
+   "fresh_toks": 12883,
+   "prefill_tps": 2202.6,
+   "turn": 1
+  },
+  {
+   "wall": 5.851,
+   "prompt_tokens": 13231,
+   "cached": 0,
+   "fresh_toks": 13231,
+   "prefill_tps": 2261.3,
+   "turn": 2
+  }
+ ]
+}

@@ -1,0 +1,482 @@
+[
+ {
+  "i": 0,
+  "class": 0,
+  "model": "MLX-mixed-",
+  "ptok": 35,
+  "wall": 2.66,
+  "ok": true
+ },
+ {
+  "i": 1,
+  "class": 1,
+  "model": "GLM-5.3-Fl",
+  "ptok": 29,
+  "wall": 1.52,
+  "ok": true
+ },
+ {
+  "i": 2,
+  "class": 2,
+  "model": "Q4/8",
+  "ptok": 6400,
+  "wall": 9.08,
+  "ok": true
+ },
+ {
+  "i": 3,
+  "class": 3,
+  "model": "MLX-mixed-",
+  "ptok": 24312,
+  "wall": 15.18,
+  "ok": false
+ },
+ {
+  "i": 4,
+  "class": 0,
+  "model": "GLM-5.3-Fl",
+  "ptok": 35,
+  "wall": 1.58,
+  "ok": true
+ },
+ {
+  "i": 5,
+  "class": 1,
+  "model": "Q4/8",
+  "ptok": 29,
+  "wall": 1.59,
+  "ok": true
+ },
+ {
+  "i": 6,
+  "class": 2,
+  "model": "MLX-mixed-",
+  "ptok": 11794,
+  "wall": 8.39,
+  "ok": false
+ },
+ {
+  "i": 7,
+  "class": 3,
+  "model": "GLM-5.3-Fl",
+  "ptok": 16641,
+  "wall": 11.13,
+  "ok": false
+ },
+ {
+  "i": 8,
+  "class": 0,
+  "model": "Q4/8",
+  "ptok": 35,
+  "wall": 1.56,
+  "ok": true
+ },
+ {
+  "i": 9,
+  "class": 1,
+  "model": "MLX-mixed-",
+  "ptok": 30,
+  "wall": 1.43,
+  "ok": true
+ },
+ {
+  "i": 10,
+  "class": 2,
+  "model": "GLM-5.3-Fl",
+  "ptok": 10516,
+  "wall": 7.95,
+  "ok": false
+ },
+ {
+  "i": 11,
+  "class": 3,
+  "model": "Q4/8",
+  "ptok": 22975,
+  "wall": 14.52,
+  "ok": true
+ },
+ {
+  "i": 12,
+  "class": 0,
+  "model": "MLX-mixed-",
+  "ptok": 35,
+  "wall": 1.58,
+  "ok": true
+ },
+ {
+  "i": 13,
+  "class": 1,
+  "model": "GLM-5.3-Fl",
+  "ptok": 30,
+  "wall": 1.53,
+  "ok": true
+ },
+ {
+  "i": 14,
+  "class": 2,
+  "model": "Q4/8",
+  "ptok": 11216,
+  "wall": 8.34,
+  "ok": true
+ },
+ {
+  "i": 15,
+  "class": 3,
+  "model": "MLX-mixed-",
+  "ptok": 16454,
+  "wall": 10.99,
+  "ok": false
+ },
+ {
+  "i": 16,
+  "class": 0,
+  "model": "GLM-5.3-Fl",
+  "ptok": 35,
+  "wall": 1.63,
+  "ok": true
+ },
+ {
+  "i": 17,
+  "class": 1,
+  "model": "Q4/8",
+  "ptok": 30,
+  "wall": 1.63,
+  "ok": true
+ },
+ {
+  "i": 18,
+  "class": 2,
+  "model": "MLX-mixed-",
+  "ptok": 11821,
+  "wall": 8.69,
+  "ok": true
+ },
+ {
+  "i": 19,
+  "class": 3,
+  "model": "GLM-5.3-Fl",
+  "ptok": 16844,
+  "wall": 11.27,
+  "ok": false
+ },
+ {
+  "i": 20,
+  "class": 0,
+  "model": "Q4/8",
+  "ptok": 35,
+  "wall": 1.64,
+  "ok": true
+ },
+ {
+  "i": 21,
+  "class": 1,
+  "model": "MLX-mixed-",
+  "ptok": 29,
+  "wall": 1.38,
+  "ok": true
+ },
+ {
+  "i": 22,
+  "class": 2,
+  "model": "GLM-5.3-Fl",
+  "ptok": 9594,
+  "wall": 7.53,
+  "ok": true
+ },
+ {
+  "i": 23,
+  "class": 3,
+  "model": "Q4/8",
+  "ptok": 14407,
+  "wall": 9.69,
+  "ok": false
+ },
+ {
+  "i": 24,
+  "class": 0,
+  "model": "MLX-mixed-",
+  "ptok": 35,
+  "wall": 1.66,
+  "ok": true
+ },
+ {
+  "i": 25,
+  "class": 1,
+  "model": "GLM-5.3-Fl",
+  "ptok": 30,
+  "wall": 1.17,
+  "ok": true
+ },
+ {
+  "i": 26,
+  "class": 2,
+  "model": "Q4/8",
+  "ptok": 9826,
+  "wall": 6.3,
+  "ok": false
+ },
+ {
+  "i": 27,
+  "class": 3,
+  "model": "MLX-mixed-",
+  "ptok": 25017,
+  "wall": 15.33,
+  "ok": false
+ },
+ {
+  "i": 28,
+  "class": 0,
+  "model": "GLM-5.3-Fl",
+  "ptok": 35,
+  "wall": 1.66,
+  "ok": true
+ },
+ {
+  "i": 29,
+  "class": 1,
+  "model": "Q4/8",
+  "ptok": 30,
+  "wall": 1.54,
+  "ok": true
+ },
+ {
+  "i": 30,
+  "class": 2,
+  "model": "MLX-mixed-",
+  "ptok": 8603,
+  "wall": 7.27,
+  "ok": true
+ },
+ {
+  "i": 31,
+  "class": 3,
+  "model": "GLM-5.3-Fl",
+  "ptok": 17195,
+  "wall": 10.4,
+  "ok": true
+ },
+ {
+  "i": 32,
+  "class": 0,
+  "model": "Q4/8",
+  "ptok": 35,
+  "wall": 1.62,
+  "ok": true
+ },
+ {
+  "i": 33,
+  "class": 1,
+  "model": "MLX-mixed-",
+  "ptok": 30,
+  "wall": 1.62,
+  "ok": true
+ },
+ {
+  "i": 34,
+  "class": 2,
+  "model": "GLM-5.3-Fl",
+  "ptok": 9490,
+  "wall": 7.31,
+  "ok": false
+ },
+ {
+  "i": 35,
+  "class": 3,
+  "model": "Q4/8",
+  "ptok": 15616,
+  "wall": 10.52,
+  "ok": false
+ },
+ {
+  "i": 36,
+  "class": 0,
+  "model": "MLX-mixed-",
+  "ptok": 35,
+  "wall": 1.58,
+  "ok": true
+ },
+ {
+  "i": 37,
+  "class": 1,
+  "model": "GLM-5.3-Fl",
+  "ptok": 29,
+  "wall": 1.62,
+  "ok": true
+ },
+ {
+  "i": 38,
+  "class": 2,
+  "model": "Q4/8",
+  "ptok": 15656,
+  "wall": 10.6,
+  "ok": true
+ },
+ {
+  "i": 39,
+  "class": 3,
+  "model": "MLX-mixed-",
+  "ptok": 18030,
+  "wall": 10.55,
+  "ok": true
+ },
+ {
+  "i": 40,
+  "class": 0,
+  "model": "GLM-5.3-Fl",
+  "ptok": 35,
+  "wall": 1.63,
+  "ok": true
+ },
+ {
+  "i": 41,
+  "class": 1,
+  "model": "Q4/8",
+  "ptok": 30,
+  "wall": 1.5,
+  "ok": true
+ },
+ {
+  "i": 42,
+  "class": 2,
+  "model": "MLX-mixed-",
+  "ptok": 6249,
+  "wall": 8.84,
+  "ok": true
+ },
+ {
+  "i": 43,
+  "class": 3,
+  "model": "GLM-5.3-Fl",
+  "ptok": 22504,
+  "wall": 13.32,
+  "ok": true
+ },
+ {
+  "i": 44,
+  "class": 0,
+  "model": "Q4/8",
+  "ptok": 35,
+  "wall": 1.63,
+  "ok": true
+ },
+ {
+  "i": 45,
+  "class": 1,
+  "model": "MLX-mixed-",
+  "ptok": 30,
+  "wall": 1.56,
+  "ok": true
+ },
+ {
+  "i": 46,
+  "class": 2,
+  "model": "GLM-5.3-Fl",
+  "ptok": 10640,
+  "wall": 8.02,
+  "ok": false
+ },
+ {
+  "i": 47,
+  "class": 3,
+  "model": "Q4/8",
+  "ptok": 16069,
+  "wall": 9.78,
+  "ok": false
+ },
+ {
+  "i": 48,
+  "class": 0,
+  "model": "MLX-mixed-",
+  "ptok": 35,
+  "wall": 1.61,
+  "ok": true
+ },
+ {
+  "i": 49,
+  "class": 1,
+  "model": "GLM-5.3-Fl",
+  "ptok": 29,
+  "wall": 1.5,
+  "ok": true
+ },
+ {
+  "i": 50,
+  "class": 2,
+  "model": "Q4/8",
+  "ptok": 12615,
+  "wall": 9.21,
+  "ok": true
+ },
+ {
+  "i": 51,
+  "class": 3,
+  "model": "MLX-mixed-",
+  "ptok": 23287,
+  "wall": 14.63,
+  "ok": false
+ },
+ {
+  "i": 52,
+  "class": 0,
+  "model": "GLM-5.3-Fl",
+  "ptok": 35,
+  "wall": 1.56,
+  "ok": true
+ },
+ {
+  "i": 53,
+  "class": 1,
+  "model": "Q4/8",
+  "ptok": 29,
+  "wall": 1.29,
+  "ok": true
+ },
+ {
+  "i": 54,
+  "class": 2,
+  "model": "MLX-mixed-",
+  "ptok": 12054,
+  "wall": 8.45,
+  "ok": true
+ },
+ {
+  "i": 55,
+  "class": 3,
+  "model": "GLM-5.3-Fl",
+  "ptok": 14085,
+  "wall": 9.71,
+  "ok": true
+ },
+ {
+  "i": 56,
+  "class": 0,
+  "model": "Q4/8",
+  "ptok": 35,
+  "wall": 1.63,
+  "ok": true
+ },
+ {
+  "i": 57,
+  "class": 1,
+  "model": "MLX-mixed-",
+  "ptok": 30,
+  "wall": 1.42,
+  "ok": true
+ },
+ {
+  "i": 58,
+  "class": 2,
+  "model": "GLM-5.3-Fl",
+  "ptok": 9719,
+  "wall": 7.37,
+  "ok": false
+ },
+ {
+  "i": 59,
+  "class": 3,
+  "model": "Q4/8",
+  "ptok": 19236,
+  "wall": 10.29,
+  "ok": true
+ }
+]

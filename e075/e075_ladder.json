@@ -1,0 +1,101 @@
+{
+ "nonce": "1790479347.376",
+ "results": [
+  {
+   "size": 6000,
+   "depth": 0.25,
+   "ptok": 6067,
+   "wall_s": 7.27,
+   "pass": true,
+   "head": "The user has sent me a long stream of random words with a \"RECORD-CODE 5928961-6"
+  },
+  {
+   "size": 6000,
+   "depth": 0.5,
+   "ptok": 6070,
+   "wall_s": 6.14,
+   "pass": true,
+   "head": "The user has sent me a long stream of random words with a \"RECORD-CODE 5928961-6"
+  },
+  {
+   "size": 6000,
+   "depth": 0.75,
+   "ptok": 6108,
+   "wall_s": 6.13,
+   "pass": true,
+   "head": "Let me analyze this request. The user has sent a long stream of random words wit"
+  },
+  {
+   "size": 12000,
+   "depth": 0.25,
+   "ptok": 11904,
+   "wall_s": 11.96,
+   "pass": true,
+   "head": "The user has sent me a long stream of text consisting of random nature-themed wo"
+  },
+  {
+   "size": 12000,
+   "depth": 0.5,
+   "ptok": 11923,
+   "wall_s": 11.95,
+   "pass": true,
+   "head": "Let me analyze this. The user has sent a long stream of words, with \"RECORD-CODE"
+  },
+  {
+   "size": 12000,
+   "depth": 0.75,
+   "ptok": 11963,
+   "wall_s": 12.01,
+   "pass": true,
+   "head": "The user has sent me a long stream of random words with a \"RECORD-CODE 12960814-"
+  },
+  {
+   "size": 24000,
+   "depth": 0.25,
+   "ptok": 23943,
+   "wall_s": 27.5,
+   "pass": true,
+   "head": "Let me analyze this request. The user has sent a long stream of text that appear"
+  },
+  {
+   "size": 24000,
+   "depth": 0.5,
+   "ptok": 23885,
+   "wall_s": 27.6,
+   "pass": true,
+   "head": "Let me analyze this. The user has sent a long stream of words, with a \"record co"
+  },
+  {
+   "size": 24000,
+   "depth": 0.75,
+   "ptok": 23913,
+   "wall_s": 27.51,
+   "pass": true,
+   "head": "The user has sent me a massive block of text consisting of random nature-themed "
+  },
+  {
+   "size": 30000,
+   "depth": 0.25,
+   "ptok": 29905,
+   "wall_s": 38.93,
+   "pass": true,
+   "head": "Let me analyze this task. The user has sent a long text of random words with \"RE"
+  },
+  {
+   "size": 30000,
+   "depth": 0.5,
+   "ptok": 29822,
+   "wall_s": 38.41,
+   "pass": true,
+   "head": "Let me analyze this request. The user has sent a very long text that appears to "
+  },
+  {
+   "size": 30000,
+   "depth": 0.75,
+   "ptok": 29848,
+   "wall_s": 38.52,
+   "pass": true,
+   "head": "Let me analyze this request. The user has sent a very long text that appears to "
+  }
+ ]
+}
