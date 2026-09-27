@@ -131,8 +131,13 @@ class SerialEngine:
         if os.environ.get("TF_SPEC", "0") not in ("", "0", "false", "off"):
             from tensorfold.families.glm5_next import specprefill as sp
             if len(tokens) > sp.spec_threshold():
-                os.environ["TF_SPEC_FIRED"] = "1"       # F7: exactness harness asserts this is unset
-                return sp.make_feed(self.model).feed(tokens, cache)
+                fed = sp.make_feed(self.model).feed(tokens, cache)
+                if fed is not None:
+                    os.environ["TF_SPEC_FIRED"] = "1"   # F7: exactness harness asserts this is unset
+                    return fed
+                if sp.spec_log():
+                    print("[spec] dense fallback (flat gate)", flush=True)
+                # fall through to the stock exact loop below
         for begin in range(0, len(tokens), step):
             chunk = [int(t) for t in tokens[begin:begin + step]]
             hidden = self.model.hidden(mx.array([chunk], dtype=mx.uint32), cache)

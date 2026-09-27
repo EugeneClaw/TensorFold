@@ -48,6 +48,18 @@ def spec_log() -> bool:
     return _flag("TF_SPEC_LOG", "1") not in ("", "0", "false", "off")
 
 
+def spec_flatness_gate() -> float:
+    """Skip spec when chunk-importance entropy exceeds this (scorer has no signal).
+    1.0 disables the gate (legacy behavior: always spec above threshold)."""
+    return float(_flag("TF_SPEC_FLATNESS", "1.0"))
+
+
+def spec_contrast_gate() -> float:
+    """Skip spec when max/median chunk importance is below this (no outlier = no
+    distinctive content for the scorer to lock onto). Default 1.0 = disabled."""
+    return float(_flag("TF_SPEC_CONTRAST", "1.0"))
+
+
 class SpecScorer:
     """One-layer scoring LM: the target's embed/head around the nextn layer's attention (dense causal)."""
 
@@ -159,3 +171,38 @@ def select_chunks(importance: mx.array, keep_pct: float = 0.4, chunk_size: int =
     for ci in top:
         indices.extend(range(ci * chunk_size, min(ci * chunk_size + chunk_size, M)))
     return mx.array(indices)
+
+
+def flatness(importance: mx.array, chunk_size: int = 32) -> float:
+    """Normalized entropy of chunk-mean importance in [0, 1].
+
+    ~1.0 = distribution near-uniform (scorer has NO signal: selection is near-random
+    and retrieval-critical chunks get dropped with probability ~keep_pct).
+    Low values = peaked distribution (scorer found distinctive content).
+    Measured on the word-salad worst case: >=0.99. On narrative/needle content: <=0.97.
+    """
+    return signal_stats(importance, chunk_size)[0]
+
+
+def signal_stats(importance: mx.array, chunk_size: int = 32) -> tuple[float, float]:
+    """(normalized entropy, contrast=max/median chunk importance).
+
+    Entropy barely moves when ONE chunk out of hundreds carries a needle; the
+    distribution's tail (max/median) is the outlier detector.
+    """
+    M = int(importance.shape[0])
+    n_chunks = math.ceil(M / chunk_size)
+    if n_chunks < 16:
+        return 0.0, 1.0
+    pad = n_chunks * chunk_size - M
+    imp = importance[: n_chunks * chunk_size] if pad <= 0 else mx.pad(importance, [(0, pad)])
+    means = mx.mean(imp.reshape(n_chunks, chunk_size), axis=1).astype(mx.float32)
+    total = mx.sum(means).item()
+    if total <= 0.0:
+        return 1.0, 1.0
+    p = means / total
+    ent = -mx.sum(p * mx.log(p + 1e-12)).item()
+    s = mx.sort(means)
+    med = max(float(s[n_chunks // 2].item()), 1e-12)
+    contrast = float(s[-1].item()) / med
+    return ent / math.log(n_chunks), contrast
