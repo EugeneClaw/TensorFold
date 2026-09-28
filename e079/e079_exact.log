@@ -1,0 +1,7 @@
+prompt 1: IDENTICAL  tokens=600/600  content== reasoning==
+prompt 2: IDENTICAL  tokens=600/600  content== reasoning==
+prompt 3: IDENTICAL  tokens=600/600  content== reasoning==
+prompt 4: IDENTICAL  tokens=173/173  content== reasoning==
+prompt 5: IDENTICAL  tokens=600/600  content== reasoning==
+
+EXACTNESS: 5/5 byte-identical

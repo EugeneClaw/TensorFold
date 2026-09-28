@@ -1,0 +1,13 @@
+[ 6000 tok @  25%] ptok=6054 wall= 11.4s PASS head='I notice this message contains a code — **14819988-6000** — '
+[ 6000 tok @  50%] ptok=6061 wall= 11.6s PASS head='Noted — the record code is **14819988-6000**.\n\nIt appears th'
+[ 6000 tok @  75%] ptok=6024 wall=  9.8s PASS head='I see a long stream of random words with "RECORD-CODE 148199'
+[12000 tok @  25%] ptok=12032 wall= 19.3s PASS head='I see a long stream of seemingly random words with a code em'
+[12000 tok @  50%] ptok=12045 wall= 20.2s PASS head="I've read through this. It's a long stream of seemingly rand"
+[12000 tok @  75%] ptok=12013 wall= 22.1s PASS head="I've read through this. It's a long stream of random words ("
+[24000 tok @  25%] ptok=23905 wall= 34.7s PASS head='The code hidden in this text is:\n\n**RECORD-CODE 3685524-2400'
+[24000 tok @  50%] ptok=23933 wall= 36.2s PASS head="I've read through your message, and I want to be straightfor"
+[24000 tok @  75%] ptok=23938 wall= 30.1s PASS head='**RECORD-CODE: 3685524-24000**\n\nThis code appears multiple t'
+[30000 tok @  25%] ptok=29897 wall= 47.0s PASS head='Noted — the record code is **10717377-30000**. It appears se'
+[30000 tok @  50%] ptok=29888 wall= 45.4s PASS head="I've received your message. Here's what I can see:\n\n- **Reco"
+[30000 tok @  75%] ptok=29862 wall= 47.0s PASS head="I've noted the code embedded in your text: **RECORD-CODE 107"
+LADDER: 12/12 PASS
