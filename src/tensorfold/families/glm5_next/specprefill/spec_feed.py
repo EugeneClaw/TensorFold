@@ -7,10 +7,13 @@ cache.offset IS the position book):
 - MLA layers: every prompt row is appended exactly once, in order — real
   latents for kept rows, zero latents with a very-negative indexer gate for
   skipped rows. The indexer pool cannot select gap blocks (finite -1e4
-  sentinel: -9984 after the bf16 cast, ~7936 nats below any real score), and
-  the prefill sdpa mask also EXCLUDES gap keys explicitly (bool mask): zero
-  latents give gap keys logit exactly 0, which would otherwise dilute flat
-  queries' softmax by ~n_gap·exp(-max_logit).
+  sentinel: -9984 after the bf16 cast, ~7936 nats below any real score; its
+  pool weight exp(-9984 - top) is exactly 0.0 in fp32), and the prefill sdpa
+  mask EXCLUDES gap keys in every window (bool mask): zero latents give gap
+  keys logit exactly 0 (E-079 measured: quantized_matmul of a zero latent
+  returns exactly 0.0 — no additive bias), so an unmasked gap key would
+  contribute exp(0)=1 to the softmax denominator and nothing to the value
+  mixture — pure mass dilution, ~n_gap/(n_gap + Σexp(l)) attenuation.
 - KDA layers: exact by construction — the recurrence runs per kept SEGMENT
   (the fused kernel, fed only real rows), and each maximal gap run of length
   L advances the state in closed form with the run-length power of the null
@@ -33,7 +36,8 @@ import numpy as np
 from tensorfold.families.glm5_next.model import KDA, KDA_K, MLACache, hc_expand, project
 
 from .spec_scorer import (SpecScorer, select_chunks, signal_stats,
-                          spec_keep_pct, spec_flatness_gate, spec_contrast_gate, spec_log)
+                          spec_keep_pct, spec_flatness_gate, spec_contrast_gate,
+                          spec_anchor_gate, spec_log)
 
 GAP_IG = -1.0e4          # bf16 -> -9984 exactly; finite so pool_blocks never NaNs
 
@@ -44,9 +48,10 @@ def align_keep(keep: np.ndarray, kpool: int = 4) -> np.ndarray:
     keep = keep.copy()
     keep[-1] = True
     gap = ~keep
+    # gap-run-end markers via shifted ANDs (vectorized; E-079: was a kpool-iteration Python loop)
     run = np.ones(len(keep), dtype=bool)
-    for s in range(kpool):
-        run = run & gap if s == 0 else run & np.concatenate([np.zeros(s, dtype=bool), gap[:-s]])
+    for s in range(1, kpool):
+        run &= np.concatenate([np.zeros(s, dtype=bool), gap[:-s]])
     run_end = np.zeros_like(keep)
     run_end[:-1] = run[:-1] & keep[1:]      # gap-run of >= kpool ending at j, kept row at j+1: feed j
     return keep | run_end
@@ -109,11 +114,13 @@ def _kda_branch(kda: KDA, c, z0: mx.array, rows_abs: np.ndarray, span: int, w0: 
 
     decay(int(rows_abs[0]) - w0)                          # leading gap (from the previous window)
     seg = 0
-    for r in range(1, len(rows_abs)):
-        if rows_abs[r] != rows_abs[r - 1] + 1:
-            run_seg(seg, r)
-            decay(int(rows_abs[r]) - int(rows_abs[r - 1]) - 1)
-            seg = r
+    # segment boundaries vectorized (E-079: was a per-row Python loop — 360K numpy-scalar
+    # iterations at 8K fed rows; np.flatnonzero on the diff is one pass)
+    breaks = np.flatnonzero(np.diff(rows_abs) != 1)
+    for b in breaks.tolist():
+        run_seg(seg, b + 1)
+        decay(int(rows_abs[b + 1]) - int(rows_abs[b]) - 1)
+        seg = b + 1
     run_seg(seg, len(rows_abs))
     c.ssm, c.conv = entry, conv
     c.offset += span
@@ -121,10 +128,16 @@ def _kda_branch(kda: KDA, c, z0: mx.array, rows_abs: np.ndarray, span: int, w0: 
     return mx.concatenate(outs) if len(outs) > 1 else outs[0]
 
 
-def _mla_branch(attn, c: MLACache, z0: mx.array, rel: mx.array, span: int) -> mx.array:
+def _mla_branch(attn, c: MLACache, z0: mx.array, rel: mx.array, span: int,
+                prior_fed: np.ndarray | None = None) -> mx.array:
     """One sparse-MLA sub-layer: full-span stamped append + kept-rows attention.
 
-    The sdpa mask excludes gap keys explicitly (bool mask, keep semantics).
+    The sdpa mask excludes gap keys explicitly (bool mask, keep semantics) — in EVERY
+    window: ``prior_fed`` carries the absolute positions of earlier windows' fed rows
+    (E-079: prior-window gap keys were accidentally left valid before; they are exact
+    zeros — zero latent through the quantized wk/wv yields logit 0 and value 0 — so the
+    effect was pure softmax-mass dilution, an untracked ~(1-frac) attenuation that
+    varied by window depth. Masked now, as the module docstring always claimed).
     """
     cfg = attn.cfg
     rows = int(z0.shape[0])
@@ -144,7 +157,8 @@ def _mla_branch(attn, c: MLACache, z0: mx.array, rel: mx.array, span: int) -> mx
     q_pos = start + rel
     causal = mx.arange(end)[None] <= q_pos[:, None]
     valid = mx.zeros((end,), dtype=mx.bool_)
-    valid[:start] = True                                      # earlier windows: fed rows only
+    if prior_fed is not None and len(prior_fed):
+        valid[mx.array(prior_fed.astype(np.int64))] = True    # earlier windows: fed rows only (true now)
     valid[start + rel] = True
     mask = causal & valid[None, :]
     o = mx.fast.scaled_dot_product_attention(q.transpose(1, 0, 2)[None], k[None], v[None],
@@ -163,6 +177,7 @@ def feed_sparse(model, tokens: list[int], keep_idx, cache: list, step: int = 204
     idx = np.nonzero(feed_mask)[0]
     pad_caches(cache)
     raws: list = []
+    prior_fed: np.ndarray | None = None                       # absolute fed positions of windows < w0
     for w0 in range(0, n, step):
         w1 = min(w0 + step, n)
         rows = idx[(idx >= w0) & (idx < w1)]                  # fed rows of this ABSOLUTE window
@@ -177,7 +192,7 @@ def feed_sparse(model, tokens: list[int], keep_idx, cache: list, step: int = 204
             if isinstance(layer.attn, KDA):
                 out = _kda_branch(layer.attn, c, z0, rows, span, w0)
             else:
-                out = _mla_branch(layer.attn, c, z0, rel, span)
+                out = _mla_branch(layer.attn, c, z0, rel, span, prior_fed)
             x = hc_expand(out, x, post, comb, False)
             xc, post, comb = layer.ffn_hc.split(x, False)
             fb = layer.mlp(mx.fast.rms_norm(xc, layer.post_norm, layer.eps), False)
@@ -189,6 +204,7 @@ def feed_sparse(model, tokens: list[int], keep_idx, cache: list, step: int = 204
         for s in range(1, int(x.shape[1])):
             raw = raw + raws_chunk[:, s]
         raws.append((raw * (1.0 / int(x.shape[1]))).astype(x.dtype))
+        prior_fed = idx[idx < w1]                             # for the next window's mask
         arrays = [x]
         for c in cache:
             arrays.extend(a for a in c.state if a is not None)
@@ -206,16 +222,33 @@ def make_feed(glmflash):
             started = time.perf_counter()
             n = len(tokens)
             tokens = list(tokens)
-            importance, score_s = scorer.score_tokens(tokens)
+            importance, score_s, scorer_cache = scorer.score_tokens(tokens, return_cache=True)
             flat, contrast = signal_stats(importance)
             gate = spec_flatness_gate()
             cgate = spec_contrast_gate()
-            if flat >= gate or contrast < cgate:
-                # Scorer has no signal (near-uniform importance / no outlier chunk):
-                # selection would be near-random and drop retrieval-critical chunks
-                # with p ~= 1 - keep_pct. Dense fallback = stock exact feed.
+            flat_hit = flat >= gate
+            contrast_hit = contrast < cgate
+            anchor = None
+            agate = spec_anchor_gate()
+            if (flat_hit or contrast_hit) and agate > 0.0:
+                # E-078: opt-in anchor bypass (explicit-question traffic only — see
+                # spec_anchor_gate). With the gate disabled (default), a flat/contrast
+                # hit always punts to the exact dense path (correctness-first).
+                anchor = scorer.anchor_strength(tokens, scorer_cache)
+                if anchor < agate:
+                    if spec_log():
+                        arm = "flatness" if flat_hit else "contrast"
+                        print(f"[spec] skip ({arm}: flat {flat:.3f} vs {gate:.2f}, "
+                              f"contrast {contrast:.2f} vs {cgate:.2f}, anchor {anchor:.2f} "
+                              f"vs {agate:.2f}): {n} tokens dense; score {score_s:.2f}s wasted",
+                              flush=True)
+                    return None
                 if spec_log():
-                    arm = "flatness" if flat >= gate else "contrast"
+                    print(f"[spec] flat-but-anchored (flat {flat:.3f}, anchor {anchor:.2f}): "
+                          f"selection runs", flush=True)
+            elif flat_hit or contrast_hit:
+                if spec_log():
+                    arm = "flatness" if flat_hit else "contrast"
                     print(f"[spec] skip ({arm}: flat {flat:.3f} vs {gate:.2f}, "
                           f"contrast {contrast:.2f} vs {cgate:.2f}): {n} tokens dense; "
                           f"score {score_s:.2f}s wasted", flush=True)

@@ -37,7 +37,7 @@ def spec_enabled() -> bool:
 
 
 def spec_keep_pct() -> float:
-    return float(_flag("TF_SPEC_KEEP", "0.4"))
+    return float(_flag("TF_SPEC_KEEP", "0.3"))   # E-079: aligned with every receipt (was 0.4, untested)
 
 
 def spec_threshold() -> int:
@@ -77,6 +77,18 @@ def spec_contrast_gate() -> float:
     """Skip spec when max/median chunk importance is below this (no outlier = no
     distinctive content for the scorer to lock onto). Default 1.0 = disabled."""
     return _float_flag("TF_SPEC_CONTRAST", 1.0)
+
+
+def spec_anchor_gate() -> float:
+    """E-078 anchor-strength gate: on flat-importance prompts, punt to dense only when
+    the question has NO lexical anchor in the document (max z of tail-row logits over
+    prompt keys below this). Anchored flat prompts run selection — the P2 probe (E-078)
+    measured needle rank 0-1/536 there, so selection is safe and dense prefill is the
+    expensive mistake (493s at 127K). DEFAULT 0.0 = DISABLED (E-078 W1b: the max-z
+    statistic cannot separate needle-anchor from template self-similarity on question-
+    less prompts — bypassing the punt there cost 3/20 vs 11/20 dense). Opt-in only,
+    and only defensible for explicit-question traffic."""
+    return _float_flag("TF_SPEC_ANCHOR", 0.0)
 
 
 class SpecScorer:
@@ -131,8 +143,10 @@ class SpecScorer:
         normed = mx.fast.rms_norm(rows, self.norm, self.eps)
         return project(normed, self.lm_head, rows_exact=True)
 
-    def score_tokens(self, tokens: list[int]):
-        """Per-token importance [n] + scoring seconds: oMLX aggregation, greedy lookahead."""
+    def score_tokens(self, tokens: list[int], return_cache: bool = False):
+        """Per-token importance [n] + scoring seconds: oMLX aggregation, greedy lookahead.
+        ``return_cache`` also returns the scorer's latent cache (E-078: anchor_strength
+        reuses its prompt keys — one latent pass serves both statistics)."""
         started = time.perf_counter()
         cache = MLACache()
         n = len(tokens)
@@ -155,7 +169,33 @@ class SpecScorer:
             weights = _avg_pool1d(weights, self.pool_kernel)
         importance = mx.mean(mx.max(weights, axis=0), axis=0)  # max over heads, then mean over lookahead (oMLX)
         mx.eval(importance)
+        if return_cache:
+            return importance, time.perf_counter() - started, cache
         return importance, time.perf_counter() - started
+
+    def anchor_strength(self, tokens: list[int], cache: MLACache,
+                        tail_n: int = 96) -> float:
+        """E-078 anchor gate statistic: max z (over tail rows and heads) of tail-row
+        logits against prompt latent keys. ``cache`` must hold the prompt latents as
+        left by score_tokens (keys[:n] = prompt keys; rollout rows appended beyond n
+        are excluded). Cost: one [tail x n] logit pass (~ms at 100K tokens)."""
+        n = len(tokens)
+        attn = self.attn
+        tail = tokens[max(0, n - tail_n):n]
+        q_list = []
+        for t in tail:
+            x = self.model.embed_tokens(mx.array([int(t)]).astype(mx.uint32))
+            h = mx.fast.rms_norm(x, self.layer.in_norm, self.eps)
+            qr = mx.fast.rms_norm(project(h, attn.q_a, rows_exact=False), attn.q_norm, self.eps)
+            q_list.append(project(qr, attn.q_b, rows_exact=False).reshape(1, attn.heads, attn.nope))
+        q_stack = mx.concatenate([q.transpose(1, 0, 2) for q in q_list], axis=1)  # [H, |tail|, dk]
+        k, _ = attn.keys_values(cache.keys[:n])
+        logits = (q_stack @ k.transpose(0, 2, 1)) * self.scale    # [H, tail, n]
+        mu = logits.mean(axis=(1, 2), keepdims=True)
+        sd = logits.std(axis=(1, 2), keepdims=True)
+        z = (logits - mu) / sd
+        anchor = float(z.max().item())
+        return anchor
 
 
 def _avg_pool1d(x: mx.array, kernel_size: int) -> mx.array:
