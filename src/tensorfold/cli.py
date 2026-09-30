@@ -57,7 +57,9 @@ def build_parser() -> argparse.ArgumentParser:
     generation.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh"), default=None,
                             help="for chat templates that take one (Qwen3.8, GLM-5.3); default: the template's own "
                                  "(Qwen3.8's is xhigh), as vLLM and mlx-lm render it; medium adds no system-prompt "
-                                 "text on Qwen3.8, and a level the template does not name lands on the nearest one it does")
+                                 "text on Qwen3.8, and a request effort the template does not name lands on the "
+                                 "nearest level it does (this default itself is passed through as the "
+                                 "template renders it)")
     generation.add_argument("--thinking-budget", type=int, default=0,
                             help="most thinking tokens before the server closes the think block (0: no limit)")
 
