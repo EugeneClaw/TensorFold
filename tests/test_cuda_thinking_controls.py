@@ -86,6 +86,7 @@ def rendered(engine):
      "effort=low;assistant:<think>"),
     ({"reasoning_effort": "high"}, GLM, "effort=high;assistant:<think>"),     # a template's own "high" is kept
     ({"reasoning_effort": "minimal"}, GLM, "effort=low;assistant:<think>"),
+    ({"reasoning_effort": "medium"}, GLM, "effort=high;assistant:<think>"),    # medium maps to the nearer named level
     ({"reasoning_effort": "none"}, QWEN, "assistant:"),
     ({"reasoning_effort": "high", "chat_template_kwargs": {"enable_thinking": False}}, QWEN, "assistant:"),
     ({"reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": True}}, QWEN,
