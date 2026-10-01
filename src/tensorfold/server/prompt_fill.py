@@ -112,7 +112,10 @@ class PromptFill:
             think_budget=int(job.think_budget),
             think_close=tuple(job.think_close),
             think_end=int(job.think_end),
-            think_open=bool(job.think_budget),
+            # --loop-guard arms the close tokens without a budget: the guard needs think_open
+            # to fire, and the budget cut itself stays inert (it requires budget > 0)
+            think_open=bool(job.think_budget) or job.loop_guard is not None,
+            loop_guard=job.loop_guard,
             call_gate=job.call_gate,
             constraint=job.constraint,
             prompt_data=job.vision,

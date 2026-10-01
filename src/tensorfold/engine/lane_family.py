@@ -131,6 +131,13 @@ class FamilyRounds(FamilyPrefill, SharedRounds, DraftDepth):
     def _forced_next(stream: Any, drawn: Any) -> int | None:
         """The token the thinking budget or a required call's fix writes at the next position instead of ``drawn``."""
 
+        if stream.loop_stop is not None and stream.think_open and not stream.finished:
+            # the loop guard fired: its think close joins the forced window (LaneStream.commit latched it)
+            stream.think_open = False
+            if not stream.think_close:
+                stream.finished, stream.finish_reason = True, "loop"
+            elif not stream.force:
+                stream.force = list(stream.think_close)
         if stream.force:
             return int(stream.force.pop(0))
         if stream.think_cut([-1]) == 0:
@@ -304,7 +311,15 @@ class FamilyRounds(FamilyPrefill, SharedRounds, DraftDepth):
             stream.force = list(fix[1:])        # the fix's rest, forced like the thinking budget's close
         stream.rounds += 1
         got = stream.commit(committed)
-        if stream.finished and len(got) < len(path):
+        if stream.loop_stop is not None and stream.think_open and not stream.finished:
+            # the loop guard fired inside commit(): close the think block through the same
+            # forced windows the thinking budget uses; the "loop" finish lands when they drain
+            stream.think_open = False
+            if stream.think_close:
+                stream.force = list(stream.think_close)
+            else:
+                stream.finished, stream.finish_reason = True, "loop"    # no close tokens: end unlabelled-shaped
+        if (stream.finished or stream.loop_stop is not None) and len(got) < len(path):
             # Keep only rows whose tokens landed, including budget cuts, so retained caches match committed tokens.
             path = path[:len(got) + 1]
         keep = len(path)

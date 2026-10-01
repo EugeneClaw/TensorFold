@@ -175,6 +175,11 @@ class LaneStream:
     think_open: bool = False
     force: list[int] = field(default_factory=list)
     stop_check: Callable[[list[int]], bool] | None = None
+    # --loop-guard: fires while think is open (server.loop_guard.LoopGuard); commit() latches the
+    # fire here, the family layer converts it to a forced think close, and the finish lands "loop"
+    loop_guard: Any = None
+    loop_stop: tuple[int, int] | None = None
+    loop: dict[str, int] | None = None
     # a request that must call a tool: its answer opens a call to an offered tool (call_gate.CallGate)
     call_gate: Any = None
     # response_format's grammar (engine.grammar.Constraint): follows every committed token, masks each drawn row
@@ -209,8 +214,8 @@ class LaneStream:
     def think_cut(self, tokens: Sequence[int]) -> int | None:
         """Return the index the thinking budget replaces with ``think_close[0]``, or None if the model already closed the think block."""
 
-        if not self._budget_active():
-            return None
+        if not self._budget_active() or self.loop_stop is not None:
+            return None    # the loop guard fired first: its forced close owns the rest of the think block
         for i, token in enumerate(tokens):
             if len(self.emitted) + i + 1 >= self.think_budget:
                 return i
@@ -265,9 +270,20 @@ class LaneStream:
             if value in self.eos_ids or (self.stop_check is not None and self.stop_check(self.emitted)):
                 self.finished = True
                 self.finish_reason = "stop"
+            elif (self.loop_guard is not None and self.think_open and self.loop_stop is None
+                  and (hit := self.loop_guard.check(self.emitted)) is not None):
+                # land the fire token, latch, and let the family layer close the think block
+                # through its forced windows (rows stay 1:1); the finish lands when force drains
+                self.loop_stop = hit
+                self.loop = {"period": hit[0], "run": hit[1]}
+                break
             elif len(self.emitted) >= int(self.max_new_tokens):
                 self.finished = True
                 self.finish_reason = "length"
+            elif (self.loop_stop is not None and not self.force):
+                # the loop's forced think close has drained: end labelled
+                self.finished = True
+                self.finish_reason = "loop"
         return landed
 
 
