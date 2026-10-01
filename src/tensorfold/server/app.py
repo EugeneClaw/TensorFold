@@ -464,7 +464,8 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
             "content": content,
             "reasoning": reasoning,
             "tool_calls_streamed": bool(calls_stream is not None and calls_stream.streamed),
-            "finish_reason": stream.finish_reason if stream is not None else "length",
+            "finish_reason": "stop" if stream is not None and stream.finish_reason == "loop" else
+                             (stream.finish_reason if stream is not None else "length"),
             "prompt_tokens": len(prompt_ids),
             "cached_tokens": int(job.cached_tokens),
             "completion_tokens": len(collected),

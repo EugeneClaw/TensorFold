@@ -115,7 +115,8 @@ def test_flag_on_fires_labels_and_ends_early() -> None:
     app = make_loopy_app(loop_guard=True)
     try:
         reply = app.chat(LOOPY, max_tokens=900)
-        assert reply["finish_reason"] == "loop"
+        # API surface stays SDK-parseable ("stop"); the event lives in runtime.loop
+        assert reply["finish_reason"] == "stop"
         assert reply["runtime"]["loop"] == {"period": 1, "run": 256}
         assert reply["completion_tokens"] < 900                  # ended well before the cap
     finally:
@@ -148,7 +149,7 @@ def test_budget_512_arrives_after_the_fire_so_the_guard_wins() -> None:
     app = make_loopy_app(loop_guard=True)
     try:
         reply = app.chat(LOOPY, max_tokens=900, sampling={"thinking_budget": 512})
-        assert reply["finish_reason"] == "loop"
+        assert reply["finish_reason"] == "stop"
         assert reply["runtime"]["loop"] == {"period": 1, "run": 256}
     finally:
         app.close()
@@ -169,7 +170,7 @@ def test_deltas_before_the_cut_stream_normally_and_nothing_is_retracted() -> Non
     try:
         deltas: list[Any] = []
         reply = app.chat(LOOPY, max_tokens=900, on_delta=deltas.append)
-        assert reply["finish_reason"] == "loop"
+        assert reply["finish_reason"] == "stop" and reply["runtime"]["loop"]
         assert deltas                                              # reasoning streamed before the cut
         text = "".join(d if isinstance(d, str) else d.get("content", "") for d in deltas)
         thought = "".join(d.get("reasoning_content", "") for d in deltas if isinstance(d, dict))
@@ -193,7 +194,8 @@ def test_a_looper_never_disturbs_its_neighbour() -> None:
             thread.start()
         for thread in threads:
             thread.join(timeout=60)
-        assert results["looper"]["finish_reason"] == "loop"
+        assert results["looper"]["finish_reason"] == "stop"
+        assert results["looper"]["runtime"]["loop"] == {"period": 1, "run": 256}
         assert results["healthy"]["finish_reason"] == "stop"
         assert "loop" not in results["healthy"]["runtime"]
     finally:
