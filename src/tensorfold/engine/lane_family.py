@@ -302,7 +302,9 @@ class FamilyRounds(FamilyPrefill, SharedRounds, DraftDepth):
             cut, fix = hit
             path = path[:cut + 1]
             committed = [*committed[:cut], fix[0]]
-            stream.force = list(fix[1:])        # the fix's rest, forced like the thinking budget's close
+            # the fix's rest, forced like the thinking budget's close; a loop latch waits
+            # for the fix to drain (convert_loop_fire defers), so append instead of overwrite
+            stream.force = [*stream.force, *fix[1:]]
         stream.rounds += 1
         got = stream.commit(committed)
         stream.convert_loop_fire()      # a latched loop guard closes think through force (rows stay 1:1)

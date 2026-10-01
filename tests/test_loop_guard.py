@@ -169,7 +169,7 @@ def test_a_stop_check_outranks_the_guard() -> None:
     assert stream.finished and stream.finish_reason == "stop"
 
 
-def test_a_fire_landing_with_the_cap_is_labelled_loop_not_length() -> None:
+def test_a_cap_crossed_mid_drain_is_labelled_length_with_the_loop_reported() -> None:
     stream = make_stream(loop_guard=LoopGuard(), max_new_tokens=FIRE)
     stream.commit(build(PREFIX, 1, 300)[:FIRE])
     assert stream.loop_stop is not None and stream.finish_reason == ""   # latched, not capped
@@ -208,11 +208,28 @@ def test_an_unarmed_stream_converts_straight_to_the_label() -> None:
 
 
 def test_thinking_off_never_arms_the_guard() -> None:
-    # the review's blocker: a marker-less or thinking-off request must never let the
-    # guard watch visible content, even with the flag on
+    # marker-less or thinking-off requests must never let the guard watch visible content
     stream = make_stream(loop_guard=LoopGuard(), think_open=False, think_close=(), think_end=-1)
     stream.commit(build(PREFIX, 1, 300))
     assert stream.loop_stop is None and not stream.finished
+
+
+def test_a_required_call_fix_drains_before_the_loop_close_appends() -> None:
+    # a fix landing after the latch must not clobber the pending think close: the
+    # conversion defers, the fix drains through force, then the close still lands
+    # and the reply still labels "loop"
+    stream = make_stream(loop_guard=LoopGuard())
+    stream.commit(build(PREFIX, 1, 300)[:FIRE])
+    assert stream.loop_stop is not None and not stream.finished and not stream.force
+    stream.force = [5, 6]                          # a required call's fix is draining
+    stream.convert_loop_fire()
+    assert stream.think_open and stream.force == [5, 6]   # deferred, fix untouched
+    stream.force.clear()
+    stream.convert_loop_fire()                     # fix drained: now it converts
+    assert not stream.think_open and stream.force == [7, 8, 9]
+    for _ in stream.force.copy():
+        stream.commit([stream.force.pop(0)])       # drain the fix's close through commit
+    assert stream.finished and stream.finish_reason == "loop"
 
 
 def test_think_cut_stands_down_once_the_guard_owns_the_close() -> None:

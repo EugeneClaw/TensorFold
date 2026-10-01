@@ -254,6 +254,8 @@ class LaneStream:
 
         if self.loop_stop is None or not self.think_open or self.finished:
             return
+        if self.force:
+            return          # a required call's fix is still draining; convert once it has landed
         self.think_open = False
         if self.think_close:
             self.force = list(self.think_close)
@@ -291,9 +293,11 @@ class LaneStream:
                 self.loop_stop = period
                 self.loop = {"period": period}
                 break
-            elif (self.loop_stop is not None and not self.force):
+            elif (self.loop_stop is not None and not self.think_open and not self.force):
                 # the loop's forced think close has drained (this beat may be its last token):
-                # the label outranks the cap when both land together
+                # the label outranks the cap when both land together. A required call's fix
+                # drains first: conversion waits for it (think still open here), so this arm
+                # must not fire until the close itself has landed
                 self.finished = True
                 self.finish_reason = "loop"
             elif len(self.emitted) >= int(self.max_new_tokens):

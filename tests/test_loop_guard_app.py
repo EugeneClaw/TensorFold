@@ -31,7 +31,7 @@ class ThinkTokenizer(FakeTokenizer):
 
 class CycleFamily(FakeFamily):
     """Healthy prompts behave like the house fake (EOS after ~40 reply tokens);
-    sentinel prompts emit a deterministic preamble, then an exact period-2 cycle
+    sentinel prompts emit a deterministic preamble, then an exact one-token cycle
     while their think block is open — and healthy tokens once it closes."""
 
     def __init__(self) -> None:
@@ -201,3 +201,36 @@ def test_a_looper_never_disturbs_its_neighbour() -> None:
         assert "loop" not in results["healthy"]["runtime"]
     finally:
         app.close()
+
+
+def test_cache_rows_match_committed_tokens_after_a_fire() -> None:
+    # the fire's row-retention claim: the family's absorbed history (its cache row) tracks
+    # prompt + committed tokens with no double-count and no loss, on both paths — the last
+    # committed token has no absorbed row by design (one-token rounds run ahead), so the
+    # row count sits in a one-token window under prompt + committed, identical for the
+    # fired path and the cap path
+    seen: dict[str, int] = {}   # rows/plen: the decode item's last seen state (prefill copies carry no plen)
+
+    class RowCountingFamily(CycleFamily):
+        def hidden(self, inputs: Any, cache: list[Any], parents: Any = None) -> Any:
+            out = super().hidden(inputs, cache, parents)
+            plen = getattr(cache[0], "plen", None)
+            if plen is not None:                   # decode's item (prefill copies carry no plen)
+                seen["rows"], seen["plen"] = len(cache[0].rows[0]), plen
+            return out
+
+    class RowCountingEngine(CycleEngine):
+        def __init__(self, model: Any = None, **kwargs: Any) -> None:
+            super(CycleEngine, self).__init__(RowCountingFamily(), **kwargs)
+
+    for arm, committed in ((True, None), (False, 900)):
+        seen.clear()
+        app = make_loopy_app(loop_guard=arm, engine_factory=RowCountingEngine)
+        try:
+            reply = app.chat(LOOPY, max_tokens=900)
+            expected = reply["completion_tokens"] if arm else committed
+            assert reply["runtime"].get("loop") == ({"period": 1} if arm else None)
+            assert seen["plen"] + expected - 1 <= seen["rows"] <= seen["plen"] + expected, \
+                (arm, seen["rows"], seen["plen"], expected)
+        finally:
+            app.close()
