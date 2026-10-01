@@ -176,9 +176,10 @@ class LaneStream:
     force: list[int] = field(default_factory=list)
     stop_check: Callable[[list[int]], bool] | None = None
     # --loop-guard: fires while think is open (server.loop_guard.LoopGuard); commit() latches the
-    # fire here, the family layer converts it to a forced think close, and the finish lands "loop"
+    # fire's period here, the family layer converts it to a forced think close, and the finish
+    # lands "loop" when the close drains
     loop_guard: Any = None
-    loop_stop: tuple[int, int] | None = None
+    loop_stop: int | None = None
     loop: dict[str, int] | None = None
     # a request that must call a tool: its answer opens a call to an offered tool (call_gate.CallGate)
     call_gate: Any = None
@@ -247,6 +248,18 @@ class LaneStream:
 
         self.finished, self.finish_reason, self.error = True, "error", error
 
+    def convert_loop_fire(self) -> None:
+        """The loop guard latched: close the think block through the forced windows the thinking
+        budget uses; with no close tokens armed the reply ends directly, still labelled."""
+
+        if self.loop_stop is None or not self.think_open or self.finished:
+            return
+        self.think_open = False
+        if self.think_close:
+            self.force = list(self.think_close)
+        else:
+            self.finished, self.finish_reason = True, "loop"
+
     def commit(self, tokens: Sequence[int]) -> list[int]:
         """Append committed tokens until the stream finishes; return what landed."""
 
@@ -271,19 +284,21 @@ class LaneStream:
                 self.finished = True
                 self.finish_reason = "stop"
             elif (self.loop_guard is not None and self.think_open and self.loop_stop is None
-                  and (hit := self.loop_guard.check(self.emitted)) is not None):
-                # land the fire token, latch, and let the family layer close the think block
-                # through its forced windows (rows stay 1:1); the finish lands when force drains
-                self.loop_stop = hit
-                self.loop = {"period": hit[0], "run": hit[1]}
+                  and (period := self.loop_guard.check(self.emitted)) is not None):
+                # land the fire token, latch its period, and let the family layer close the
+                # think block through its forced windows (rows stay 1:1); the finish lands
+                # when the close drains
+                self.loop_stop = period
+                self.loop = {"period": period}
                 break
+            elif (self.loop_stop is not None and not self.force):
+                # the loop's forced think close has drained (this beat may be its last token):
+                # the label outranks the cap when both land together
+                self.finished = True
+                self.finish_reason = "loop"
             elif len(self.emitted) >= int(self.max_new_tokens):
                 self.finished = True
                 self.finish_reason = "length"
-            elif (self.loop_stop is not None and not self.force):
-                # the loop's forced think close has drained: end labelled
-                self.finished = True
-                self.finish_reason = "loop"
         return landed
 
 

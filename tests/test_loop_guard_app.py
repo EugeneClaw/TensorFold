@@ -1,10 +1,10 @@
 """--loop-guard at the app level: a fake family whose replies (marked by a sentinel
-prompt token) fall into an exact period-2 cycle 64 tokens into their think block.
+prompt token) fall into an exact one-token cycle 64 tokens into their think block.
 
 The guard must fire, close the think block through the family's forced windows, and
-label the reply "loop" — and change nothing when the flag is off or the reply is
-healthy. Budget precedence runs both ways: a 256 budget cuts before the guard's
-earliest fire (the budget wins), a 512 budget cuts after it (the guard wins)."""
+report the event in runtime.loop — and change nothing when the flag is off or the
+reply is healthy. Budget precedence runs both ways: a 256 budget cuts before the
+guard's earliest fire (the budget wins), a 512 budget cuts after it (the guard wins)."""
 
 from __future__ import annotations
 
@@ -117,7 +117,7 @@ def test_flag_on_fires_labels_and_ends_early() -> None:
         reply = app.chat(LOOPY, max_tokens=900)
         # API surface stays SDK-parseable ("stop"); the event lives in runtime.loop
         assert reply["finish_reason"] == "stop"
-        assert reply["runtime"]["loop"] == {"period": 1, "run": 256}
+        assert reply["runtime"]["loop"] == {"period": 1}
         assert reply["completion_tokens"] < 900                  # ended well before the cap
     finally:
         app.close()
@@ -150,7 +150,7 @@ def test_budget_512_arrives_after_the_fire_so_the_guard_wins() -> None:
     try:
         reply = app.chat(LOOPY, max_tokens=900, sampling={"thinking_budget": 512})
         assert reply["finish_reason"] == "stop"
-        assert reply["runtime"]["loop"] == {"period": 1, "run": 256}
+        assert reply["runtime"]["loop"] == {"period": 1}
     finally:
         app.close()
 
@@ -172,10 +172,10 @@ def test_deltas_before_the_cut_stream_normally_and_nothing_is_retracted() -> Non
         reply = app.chat(LOOPY, max_tokens=900, on_delta=deltas.append)
         assert reply["finish_reason"] == "stop" and reply["runtime"]["loop"]
         assert deltas                                              # reasoning streamed before the cut
-        text = "".join(d if isinstance(d, str) else d.get("content", "") for d in deltas)
+        strings = [d if isinstance(d, str) else d.get("content", "") for d in deltas]
         thought = "".join(d.get("reasoning_content", "") for d in deltas if isinstance(d, dict))
-        assert reply["content"] == text or reply["content"] == ""
-        assert thought or text                                     # the preamble reached the client
+        assert thought                                             # the preamble reached the client
+        assert "".join(strings) == reply["content"]                # nothing retracted, no edits
     finally:
         app.close()
 
@@ -194,8 +194,9 @@ def test_a_looper_never_disturbs_its_neighbour() -> None:
             thread.start()
         for thread in threads:
             thread.join(timeout=60)
+        assert all(not thread.is_alive() for thread in threads), "a request hung"
         assert results["looper"]["finish_reason"] == "stop"
-        assert results["looper"]["runtime"]["loop"] == {"period": 1, "run": 256}
+        assert results["looper"]["runtime"]["loop"] == {"period": 1}
         assert results["healthy"]["finish_reason"] == "stop"
         assert "loop" not in results["healthy"]["runtime"]
     finally:

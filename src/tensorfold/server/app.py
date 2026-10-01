@@ -346,9 +346,10 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
             if budget > 0:
                 job.think_close, job.think_end = self._think_close()
                 job.think_budget = budget if job.think_end >= 0 else 0
-            elif self.loop_guard is not None:
-                # --loop-guard arms the think markers without a budget so the guard can see
-                # the think block open and close it on fire (the budget cut stays inert)
+            elif thinking and self.loop_guard is not None:
+                # --loop-guard arms the think markers (no budget) so the guard can fire and
+                # then close the block; thinking-off requests never arm, so the guard never
+                # watches visible content
                 job.think_close, job.think_end = self._think_close()
             if drafts:
                 base: Any = SuffixLookupProposer(min_match=self.min_match)
@@ -510,7 +511,7 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
             f"[tensorfold] done {job.job_id} prompt={len(prompt_ids)} cached={job.cached_tokens} "
             f"thinking={thinking} effort={reply['runtime']['reasoning_effort']} "
             f"tokens={len(collected)} sha={_token_sha(collected)} finish={reply['finish_reason']} "
-            + (f"loop=period:{stream.loop['period']}:run:{stream.loop['run']} "
+            + (f"loop=period:{stream.loop['period']} "
                if stream is not None and stream.loop else "")
             + f"tok/s={reply['runtime']['tokens_per_second']:.1f} "
             f"ttft={(first_token_at - received_at) if first_token_at else -1:.2f}s "

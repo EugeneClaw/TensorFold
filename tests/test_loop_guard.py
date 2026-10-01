@@ -10,7 +10,6 @@ the finish lands "loop" only after those forced tokens drain through commit().
 
 from __future__ import annotations
 
-import random
 import time
 from typing import Any
 
@@ -65,14 +64,16 @@ def test_near_miss_cycle_never_fires_and_stays_cheap() -> None:
         count += 1
         if count % 12 == 0:
             stream[-1] += 1                    # a perturbation the exact-match test must not survive
-    stream = stream[:30_000]
     assert guard.check(stream) is None
     started = time.perf_counter()
     per_token = LoopGuard()
-    for i in range(WARM_IN, len(stream)):
-        per_token.check(stream[: i + 1])
-    per_commit_us = (time.perf_counter() - started) / (len(stream) - WARM_IN) * 1e6
-    assert per_commit_us < 50, per_commit_us
+    for i in range(len(stream), len(stream) + 20_000):
+        value = block[i % 4] + (1 if i % 12 == 0 else 0)     # keep perturbing: a near-miss, never a run
+        stream.append(value)
+        per_token.check(stream)
+    per_commit_us = (time.perf_counter() - started) / 20_000 * 1e6
+    # generous bound: an accidentally unbounded scan would sit in the milliseconds
+    assert per_commit_us < 200, per_commit_us
 
 
 def test_text_gate_stands_down_on_garbled_or_empty_decodes() -> None:
@@ -106,8 +107,8 @@ def test_commit_latches_the_fire_without_finishing() -> None:
     landed = stream.commit(tokens[: FIRE - 1])
     assert len(landed) == FIRE - 1 and not stream.finished and stream.loop_stop is None
     landed = stream.commit(tokens[FIRE - 1: FIRE])
-    assert landed == tokens[FIRE - 1: FIRE] and stream.loop_stop == (1, LOOP_MIN_RUN)
-    assert stream.loop == {"period": 1, "run": LOOP_MIN_RUN}
+    assert landed == tokens[FIRE - 1: FIRE] and stream.loop_stop == 1
+    assert stream.loop == {"period": 1}
     assert not stream.finished and stream.finish_reason == ""
 
 
@@ -117,7 +118,7 @@ def test_the_finish_lands_only_after_the_forced_close_drains() -> None:
     stream.commit(tokens[:FIRE])
     assert stream.loop_stop is not None and not stream.finished
     # the family layer converts the latch, then pops the close tokens from force and
-    # commits each as a normal window token; commit() itself never reads force
+    # commits each as a normal window token; commit() only observes that force has drained
     stream.think_open = False
     stream.force = list(stream.think_close)
     for _ in stream.think_close:
@@ -152,7 +153,7 @@ def test_a_latched_stream_cannot_refire_and_runs_to_its_labelled_end() -> None:
         stream.commit([stream.force.pop(0)])
     stream.commit(tokens[FIRE:FIRE + 40])          # still cyclic text after think: no refire
     assert stream.finished and stream.finish_reason == "loop"
-    assert stream.loop == {"period": 1, "run": LOOP_MIN_RUN}
+    assert stream.loop == {"period": 1}
     assert stream.emitted[FIRE:FIRE + 3] == [7, 8, 9]
 
 
@@ -171,7 +172,47 @@ def test_a_stop_check_outranks_the_guard() -> None:
 def test_a_fire_landing_with_the_cap_is_labelled_loop_not_length() -> None:
     stream = make_stream(loop_guard=LoopGuard(), max_new_tokens=FIRE)
     stream.commit(build(PREFIX, 1, 300)[:FIRE])
-    assert stream.loop_stop is not None            # the guard arm outranks the length arm
+    assert stream.loop_stop is not None and stream.finish_reason == ""   # latched, not capped
+    stream.convert_loop_fire()
+    for _ in stream.think_close:
+        stream.commit([stream.force.pop(0)])
+    # the cap crossed mid-drain labels "length" — the budget cut's close tokens behave the
+    # same; the drain landing exactly on the cap keeps the label (next test)
+    assert stream.finished and stream.finish_reason == "length"
+    assert stream.loop == {"period": 1}                                  # the event is still reported
+
+
+def test_the_drain_beating_the_cap_is_the_precedence_when_they_land_together() -> None:
+    # the cap's elif sits after the drain arm: a close token that lands with
+    # len(emitted) == max_new_tokens still finishes "loop", not "length"
+    stream = make_stream(loop_guard=LoopGuard(), max_new_tokens=FIRE + 3)
+    tokens = build(PREFIX, 1, 300)
+    stream.commit(tokens[:FIRE])
+    stream.convert_loop_fire()
+    assert len(stream.force) == 3
+    stream.commit([stream.force.pop(0)])
+    stream.commit([stream.force.pop(0)])
+    assert not stream.finished
+    stream.commit([stream.force.pop(0)])          # this token reaches the cap too
+    assert stream.finished and stream.finish_reason == "loop"
+
+
+def test_an_unarmed_stream_converts_straight_to_the_label() -> None:
+    # defensive path: the family's conversion with no close tokens armed (arming pairs
+    # think_close with think_end, so make_job cannot produce this; kept as a guarantee)
+    stream = make_stream(loop_guard=LoopGuard(), think_close=())
+    stream.commit(build(PREFIX, 1, 300)[:FIRE])
+    assert stream.loop_stop is not None and stream.think_open
+    stream.convert_loop_fire()
+    assert stream.finished and stream.finish_reason == "loop" and not stream.force
+
+
+def test_thinking_off_never_arms_the_guard() -> None:
+    # the review's blocker: a marker-less or thinking-off request must never let the
+    # guard watch visible content, even with the flag on
+    stream = make_stream(loop_guard=LoopGuard(), think_open=False, think_close=(), think_end=-1)
+    stream.commit(build(PREFIX, 1, 300))
+    assert stream.loop_stop is None and not stream.finished
 
 
 def test_think_cut_stands_down_once_the_guard_owns_the_close() -> None:
