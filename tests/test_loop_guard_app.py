@@ -80,7 +80,8 @@ class CycleFamily(FakeFamily):
 def _answer(r: int) -> int:
     # the post-close answer: _healthy far past its EOS wrap (proven plain text — no
     # tool-call opener, nothing split_thinking holds back), deterministic
-    return _healthy(1000 + r) if (v := _healthy(1000 + r)) != CYCLE[0] else 91
+    value = _healthy(1000 + r)
+    return 91 if value == CYCLE[0] else value     # 90 is the cycle token: never answer with it
 
 def _post_close(drawn: int) -> int:
     return EOS if drawn >= ANSWER_TOKENS else _answer(drawn)
