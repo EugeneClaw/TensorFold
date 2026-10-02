@@ -13,7 +13,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from tensorfold.engine.lane_engine import LaneStream
+from tensorfold.engine.lane_engine import FIRED, LaneStream
 from tensorfold.server.loop_guard import LOOP_MIN_RUN, MAX_PERIOD, WARM_IN, LoopGuard
 
 PREFIX = 70
@@ -125,7 +125,7 @@ def test_the_close_drains_and_the_answer_continues() -> None:
         stream.commit([stream.force.pop(0)])
     # the close drained: the reply continues (the budget-cut shape) instead of ending
     assert stream.emitted[-3:] == [7, 8, 9]
-    assert not stream.finished and not stream.force and stream.loop_stop is None
+    assert not stream.finished and not stream.force and stream.loop_stop == FIRED
     assert stream.loop == {"period": 1}                     # the event stays reported
     stream.commit([10_500])                                 # the answer's own end
     assert stream.finished and stream.finish_reason == "stop"
@@ -154,7 +154,7 @@ def test_a_latched_stream_cannot_refire_and_the_answer_continues() -> None:
     for _ in stream.think_close:
         stream.commit([stream.force.pop(0)])
     stream.commit(tokens[FIRE:FIRE + 40])          # still cyclic text after think: no refire
-    assert not stream.finished and stream.loop_stop is None
+    assert not stream.finished and stream.loop_stop == FIRED
     assert stream.loop == {"period": 1}            # the event stays reported
     assert stream.emitted[FIRE:FIRE + 3] == [7, 8, 9]
 
@@ -237,8 +237,90 @@ def test_a_required_call_fix_drains_before_the_loop_close_appends() -> None:
     assert stream.finished and stream.finish_reason == "stop"
 
 
+def test_a_reopened_think_block_never_fires_twice() -> None:
+    # F1: the one-fire-per-reply invariant, driven through the worst case — after the
+    # close drains and the answer continues, a think-open marker re-opens the block
+    # (think_end re-armed), the answer itself cycles, and NOTHING fires again: the
+    # guard runs once per reply
+    stream = make_stream(loop_guard=LoopGuard(), eos_ids=frozenset({10_500}))
+    tokens = build(PREFIX, 1, 300)
+    stream.commit(tokens[:FIRE])
+    stream.think_open = False
+    stream.force = list(stream.think_close)
+    for _ in stream.think_close:
+        stream.commit([stream.force.pop(0)])
+    assert stream.loop_stop == FIRED and not stream.finished
+    stream.think_open = True                        # a re-opened block in the answer
+    stream.commit(build(20, 1, 300) + [10_500])     # a second full cycle, then EOS
+    assert stream.finished and stream.finish_reason == "stop"
+    assert stream.loop == {"period": 1}             # one fire, reported once
+
+
+def test_the_budget_cannot_reclose_after_the_guard_owns_the_reply() -> None:
+    # F3: a large remaining thinking budget must not cut inside the continued answer:
+    # the stand-down keys on the fire (loop), not on the transient latch
+    stream = make_stream(loop_guard=LoopGuard(), think_budget=256, eos_ids=frozenset({10_500}))
+    tokens = build(PREFIX, 1, 300)
+    stream.commit(tokens[:FIRE])
+    stream.think_open = False
+    stream.force = list(stream.think_close)
+    for _ in stream.think_close:
+        stream.commit([stream.force.pop(0)])
+    assert stream.loop_stop == FIRED
+    stream.think_open = True                        # the answer re-opens the block
+    assert stream.think_cut(build(20, 1, 60)) is None   # the budget never recovers the reply
+    assert stream.loop_stop == FIRED                # even with think re-opened
+    stream.commit([10_500])
+    assert stream.finished and stream.finish_reason == "stop" and stream.loop_stop == FIRED
+
+
+def test_the_latch_state_is_deterministic_on_every_finish_path() -> None:
+    # F4: no finish path leaves an ambiguous latch — a reply that finished with the
+    # close drained carries FIRED; a reply the cap cut mid-drain carries the period
+    # (the close never finished). FIRED is one-per-reply either way: no second fire.
+    def drained_case(kwargs: dict[str, Any]) -> LaneStream:
+        stream = make_stream(loop_guard=LoopGuard(), **kwargs)
+        stream.commit(build(PREFIX, 1, 300)[:FIRE])
+        stream.convert_loop_fire()
+        for _ in list(stream.force):
+            stream.commit([stream.force.pop(0)])
+        return stream
+
+    stream = drained_case({"eos_ids": frozenset({10_500})})
+    stream.commit([10_500])                          # the answer's own end
+    assert stream.finish_reason == "stop" and stream.loop_stop == FIRED
+
+    stream = drained_case({"stop_check": lambda ids: ids[-1] == 7_000})
+    stream.commit([7_000, 7_001])                    # the answer's own stop string
+    assert stream.finish_reason == "stop" and stream.loop_stop == FIRED
+
+    stream = make_stream(loop_guard=LoopGuard(), max_new_tokens=FIRE + 3)
+    stream.commit(build(PREFIX, 1, 300)[:FIRE])
+    stream.convert_loop_fire()
+    while not stream.finished:
+        stream.commit([7_000 + (len(stream.emitted) % 4)])
+    assert stream.finish_reason == "length" and stream.loop_stop == FIRED
+    assert stream.loop == {"period": 1}
+
+
+def test_a_close_token_at_the_cap_labels_length_with_the_loop_reported() -> None:
+    # F4 collision: the new precedence — the cap outranks the drain arm — must differ
+    # from the reviewed PR's ordering, where the same landing kept the loop label
+    stream = make_stream(loop_guard=LoopGuard(), max_new_tokens=FIRE + 3)
+    tokens = build(PREFIX, 1, 300)
+    stream.commit(tokens[:FIRE])
+    stream.convert_loop_fire()
+    assert len(stream.force) == 3
+    stream.commit([stream.force.pop(0)])
+    stream.commit([stream.force.pop(0)])
+    assert not stream.finished
+    stream.commit([stream.force.pop(0)])            # reaches the cap exactly
+    assert stream.finished and stream.finish_reason == "length"
+    assert stream.loop == {"period": 1}             # the event is still reported
+
+
 def test_think_cut_stands_down_once_the_guard_owns_the_close() -> None:
-    stream = make_stream(loop_guard=LoopGuard(), think_budget=256)
+    stream = make_stream(loop_guard=LoopGuard(), think_budget=256, eos_ids=frozenset({10_500}))
     tokens = build(PREFIX, 1, 300)
     before = stream.commit(tokens[:FIRE - 1])
     assert stream.think_cut(before) is not None    # the budget still owns the cut

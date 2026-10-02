@@ -10,6 +10,10 @@ from tensorfold.engine.family_prefill import drain
 from tensorfold.engine.lane_family import FamilyRounds
 from tensorfold.engine.prefill_plan import PrefillPlan, PromptChunks
 
+# the loop guard's latch after its forced close has drained: the fire happened, the
+# reply continued with the model's answer, and no second fire may land in this reply
+FIRED = "fired"
+
 
 class SuffixLookupProposer:
     """Propose continuations only with enough matching context, limiting width by evidence so rejected drafts cost rows without changing output."""
@@ -179,7 +183,7 @@ class LaneStream:
     # fire's period here, the family layer converts it to a forced think close, and the finish
     # lands "loop" when the close drains
     loop_guard: Any = None
-    loop_stop: int | None = None
+    loop_stop: int | str | None = None            # the period, then FIRED once the close drains
     loop: dict[str, int] | None = None
     # a request that must call a tool: its answer opens a call to an offered tool (call_gate.CallGate)
     call_gate: Any = None
@@ -215,7 +219,7 @@ class LaneStream:
     def think_cut(self, tokens: Sequence[int]) -> int | None:
         """Return the index the thinking budget replaces with ``think_close[0]``, or None if the model already closed the think block."""
 
-        if not self._budget_active() or self.loop_stop is not None:
+        if not self._budget_active() or self.loop is not None:
             return None    # the loop guard fired first: its forced close owns the rest of the think block
         for i, token in enumerate(tokens):
             if len(self.emitted) + i + 1 >= self.think_budget:
@@ -294,18 +298,24 @@ class LaneStream:
                 self.loop = {"period": period}
                 break
             elif len(self.emitted) >= int(self.max_new_tokens):
+                # the cap is the cap: a cap reached mid-drain cuts the close itself, so
+                # the latch settles to FIRED here (the fire happened; the answer never
+                # started) — no finish path leaves the transient period set
                 self.finished = True
                 self.finish_reason = "length"
+                if self.loop_stop is not None and not self.think_open:
+                    self.loop_stop = FIRED
             elif (self.loop_stop is not None and not self.think_open and not self.force):
                 # the forced think close has drained (this beat may be its last token):
                 # the reply continues as the thinking budget's does — the model answers
                 # from the closed block, and the finish is the answer's own (stop/length;
-                # the cap above is the cap). The fire can not repeat: the guard only
-                # checks while think is open, and the event stays reported on
-                # stream.loop / the log line. A required call's fix drains first:
-                # conversion waits for it (think still open here), so this arm must not
-                # run until the close itself has landed
-                self.loop_stop = None
+                # the cap above is the cap). The latch survives as loop_stop == FIRED (the
+                # fire is one-per-reply: the budget's stand-down reads it, and the guard
+                # only checks while think is open — a re-opened block never fires again).
+                # The event stays reported on stream.loop / the log line. A required
+                # call's fix drains first: conversion waits for it (think still open
+                # here), so this arm must not run until the close itself has landed
+                self.loop_stop = FIRED
         return landed
 
 
