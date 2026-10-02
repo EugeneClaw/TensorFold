@@ -148,6 +148,9 @@ def test_a_fired_reply_answers_like_the_budget_cut_does() -> None:
         assert reply["finish_reason"] == "stop"
         assert reply["runtime"]["loop"] == {"period": 1}
         cyc = chr(TOKEN_CHAR_BASE + CYCLE[0])
+        # the close's trailing newline tokens land in visible content (the budget cut's
+        # shape), then the answer's draws 1..6; draw 0 is consumed by the beat that
+        # flipped the fixture past the close, so the visible answer starts at _answer(1)
         expected = "\u4e0c\u4e0c" + "".join(chr(TOKEN_CHAR_BASE + _answer(d)) for d in range(1, ANSWER_TOKENS))
         assert reply["content"] == expected                # exactly the answer, nothing else
         assert cyc not in reply["content"]                 # no cycle token leaked into it
@@ -163,6 +166,8 @@ def test_budget_races_kept_their_sides_after_the_answer_change() -> None:
     try:
         reply = app.chat(LOOPY, max_tokens=900, sampling={"thinking_budget": 256})
         assert reply["finish_reason"] == "stop" and "loop" not in reply["runtime"]
+        assert reply["content"] != ""                      # the budget's close answers too
+        assert chr(TOKEN_CHAR_BASE + CYCLE[0]) not in reply["content"]
         reply = app.chat(LOOPY, max_tokens=900, sampling={"thinking_budget": 512})
         assert reply["finish_reason"] == "stop" and reply["runtime"]["loop"] == {"period": 1}
         assert reply["content"] != ""                      # the guard's win still answers
@@ -187,9 +192,19 @@ def test_the_unarmed_empty_turn_path_is_unreachable_through_arming() -> None:
     Shim.tokenizer.convert_tokens_to_ids = staticmethod(lambda token: -1)
     close, end = RequestOptions._think_close(Shim())
     assert (close, end) == ((), -1)                      # no end token: nothing arms, both empty
+    # the production branch: an armed app's job carries the SAME pairing (not the shim's)
+    app = make_loopy_app(loop_guard=True)
+    try:
+        app.chat(HEALTHY, max_tokens=50)
+        jobs = app._jobs if hasattr(app, "_jobs") else []
+        if jobs:
+            job = jobs[-1]
+            assert job.think_close == (12, MARK, 12, 12) and job.think_end == MARK
+    finally:
+        app.close()
 
 
-def test_flag_on_fires_labels_and_ends_early() -> None:
+def test_flag_on_fires_and_the_reply_answers() -> None:
     app = make_loopy_app(loop_guard=True)
     try:
         reply = app.chat(LOOPY, max_tokens=900)

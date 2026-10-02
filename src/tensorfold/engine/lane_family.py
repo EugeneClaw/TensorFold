@@ -312,7 +312,8 @@ class FamilyRounds(FamilyPrefill, SharedRounds, DraftDepth):
             # Keep only rows whose tokens landed, including budget cuts, so retained caches match committed tokens.
             # loop_stop reads as "not None" both while the guard's close is pending (int)
             # and after it settles (FIRED) — the trim is identical on either side, and a
-            # finished path never carries the transient int (see LaneStream.commit)
+            # finished path never carries the transient int (the settles live in
+            # LaneStream.commit and convert_loop_fire)
             path = path[:len(got) + 1]
         keep = len(path)
         stream.cache_len += keep

@@ -215,6 +215,8 @@ def test_a_cap_between_close_tokens_cuts_mid_drain_and_still_reports() -> None:
     stream.commit([stream.force.pop(0)])            # this token reaches the cap; 1 close token pending
     assert stream.finished and stream.finish_reason == "length"
     assert stream.loop_stop == FIRED and stream.loop == {"period": 1}
+
+
 def test_an_unarmed_stream_converts_straight_to_the_label() -> None:
     # defensive path: the family's conversion with no close tokens armed (arming pairs
     # think_close with think_end, so make_job cannot produce this; kept as a guarantee)
