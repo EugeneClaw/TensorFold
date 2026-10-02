@@ -219,8 +219,10 @@ class LaneStream:
     def think_cut(self, tokens: Sequence[int]) -> int | None:
         """Return the index the thinking budget replaces with ``think_close[0]``, or None if the model already closed the think block."""
 
-        if not self._budget_active() or self.loop is not None:
-            return None    # the loop guard fired first: its forced close owns the rest of the think block
+        if not self._budget_active() or isinstance(self.loop_stop, int):
+            return None    # the guard's close is pending (latched, not yet drained): it owns
+                           # the block. Once the close has drained (FIRED) the user's budget
+                           # re-arms: it bounds any think block the answer re-opens
         for i, token in enumerate(tokens):
             if len(self.emitted) + i + 1 >= self.think_budget:
                 return i
@@ -258,7 +260,12 @@ class LaneStream:
 
         if not isinstance(self.loop_stop, int) or not self.think_open or self.finished:
             return                  # FIRED (the close already drained): one shot per reply —
-                                    # a re-opened block in the answer never re-closes
+                                    # a re-opened block in the answer never re-closes.
+                                    # The isinstance-before-force order is load-bearing:
+                                    # loop_stop stays int while a required call's fix
+                                    # drains (FIRED lands no earlier than the close
+                                    # draining through commit), so the deferral below
+                                    # still reaches a latched guard
         if self.force:
             return          # a required call's fix is still draining; convert once it has landed
         self.think_open = False
@@ -266,6 +273,8 @@ class LaneStream:
             self.force = list(self.think_close)
         else:
             self.finished, self.finish_reason = True, "loop"
+            self.loop_stop = FIRED   # no close armed: nothing to continue from; the latch
+                                     # settles so no finish path leaves the transient period
 
     def commit(self, tokens: Sequence[int]) -> list[int]:
         """Append committed tokens until the stream finishes; return what landed."""
@@ -304,7 +313,7 @@ class LaneStream:
                 # started) — no finish path leaves the transient period set
                 self.finished = True
                 self.finish_reason = "length"
-                if self.loop_stop is not None and not self.think_open:
+                if self.loop_stop is not None:
                     self.loop_stop = FIRED
             elif (self.loop_stop is not None and not self.think_open and not self.force):
                 # the forced think close has drained (this beat may be its last token):

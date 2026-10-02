@@ -256,20 +256,21 @@ def test_a_reopened_think_block_never_fires_twice() -> None:
     assert stream.loop == {"period": 1}             # one fire, reported once
 
 
-def test_the_budget_cannot_reclose_after_the_guard_owns_the_reply() -> None:
-    # F3: a large remaining thinking budget must not cut inside the continued answer:
-    # the stand-down keys on the fire (loop), not on the transient latch
+def test_the_budget_rearms_for_a_block_the_answer_reopens() -> None:
+    # review-2 C4 (re-arm): while the guard's close is pending (loop_stop int) the budget
+    # stands down; once it has drained (FIRED) the user's budget re-arms — it bounds any
+    # think block the answer re-opens, so a second cycle cannot burn to the cap
     stream = make_stream(loop_guard=LoopGuard(), think_budget=256, eos_ids=frozenset({10_500}))
     tokens = build(PREFIX, 1, 300)
     stream.commit(tokens[:FIRE])
+    assert stream.think_cut(build(20, 1, 60)) is None      # pending: the guard owns the block
     stream.think_open = False
     stream.force = list(stream.think_close)
     for _ in stream.think_close:
         stream.commit([stream.force.pop(0)])
     assert stream.loop_stop == FIRED
-    stream.think_open = True                        # the answer re-opens the block
-    assert stream.think_cut(build(20, 1, 60)) is None   # the budget never recovers the reply
-    assert stream.loop_stop == FIRED                # even with think re-opened
+    stream.think_open = True                                # the answer re-opens the block
+    assert stream.think_cut(build(20, 1, 60)) is not None   # re-armed: the budget bounds it
     stream.commit([10_500])
     assert stream.finished and stream.finish_reason == "stop" and stream.loop_stop == FIRED
 

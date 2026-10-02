@@ -310,6 +310,9 @@ class FamilyRounds(FamilyPrefill, SharedRounds, DraftDepth):
         stream.convert_loop_fire()      # a latched loop guard closes think through force (rows stay 1:1)
         if (stream.finished or stream.loop_stop is not None) and len(got) < len(path):
             # Keep only rows whose tokens landed, including budget cuts, so retained caches match committed tokens.
+            # loop_stop reads as "not None" both while the guard's close is pending (int)
+            # and after it settles (FIRED) — the trim is identical on either side, and a
+            # finished path never carries the transient int (see LaneStream.commit)
             path = path[:len(got) + 1]
         keep = len(path)
         stream.cache_len += keep

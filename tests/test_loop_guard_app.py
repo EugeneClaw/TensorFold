@@ -13,7 +13,7 @@ from typing import Any
 
 from tensorfold.server.app import ChatApp
 from tests.lane_fakes import VOCAB, FakeBatchItem, FakeEngine, FakeFamily
-from tests.test_lane_server import EOS, FakeTokenizer
+from tests.test_lane_server import EOS, TOKEN_CHAR_BASE, FakeTokenizer
 
 SENTINEL = 150      # prompt token marking a looper: the content char U+4E96 encodes to this CJK-band id
 MARK = 160          # </think> under ThinkTokenizer's lookup; also the close tokens' end id
@@ -28,6 +28,11 @@ class ThinkTokenizer(FakeTokenizer):
 
     def convert_tokens_to_ids(self, token: str) -> int:
         return MARK if token == "</think>" else -1
+
+    def decode(self, ids: list[int]) -> str:
+        # the close token renders as the marker text, so a closed block splits into
+        # reasoning + answer exactly as a real tokenizer's does
+        return "".join("</think>" if int(t) == MARK else chr(TOKEN_CHAR_BASE + int(t)) for t in ids)
 
 class CycleFamily(FakeFamily):
     """Healthy prompts behave like the house fake (EOS after ~40 reply tokens);
@@ -48,7 +53,19 @@ class CycleFamily(FakeFamily):
         looper = (plen is not None and SENTINEL in history[:plen] and MARK not in history)
         for token in np.array(inputs).reshape(-1).tolist():
             history.append(int(token))
-            out.append(self._pick(len(history) - plen if plen is not None else 0, looper))
+            r = len(history) - plen if plen is not None else 0
+            if looper:
+                out.append(self._pick(r, looper))
+            elif plen is not None and SENTINEL in history[:plen]:
+                # a close landed mid-reply (the guard's, or the budget's): the model
+                # answers ANSWER_TOKENS tokens, then ends its own reply
+                drawn = getattr(cache[0], "answer_drawn", None)
+                if drawn is None:
+                    cache[0].answer_drawn = 0
+                out.append(_post_close(cache[0].answer_drawn))
+                cache[0].answer_drawn += 1
+            else:
+                out.append(self._pick(r, looper))
         return mx.array(out, dtype=mx.float32).reshape(1, -1, 1)
 
     @staticmethod
@@ -59,6 +76,16 @@ class CycleFamily(FakeFamily):
             token = _healthy(r)
             return (token + 1) % VOCAB if token == EOS else token    # the preamble never ends the reply
         return CYCLE[(r - T0) % len(CYCLE)]
+
+def _answer(r: int) -> int:
+    # the post-close answer: _healthy far past its EOS wrap (proven plain text — no
+    # tool-call opener, nothing split_thinking holds back), deterministic
+    return _healthy(1000 + r) if (v := _healthy(1000 + r)) != CYCLE[0] else 91
+
+def _post_close(drawn: int) -> int:
+    return EOS if drawn >= ANSWER_TOKENS else _answer(drawn)
+
+ANSWER_TOKENS = 7   # the model answers 7 tokens after whichever close landed (guard or budget)
 
 
 def _healthy(r: int) -> int:
@@ -111,6 +138,38 @@ LOOPY = [{"role": "user", "content": "\u4e96"}]  # encodes the SENTINEL prompt t
 HEALTHY = [{"role": "user", "content": "hi"}]
 
 
+def test_a_fired_reply_answers_like_the_budget_cut_does() -> None:
+    # C2 — the reporter's contract, at the app layer: after the guard's forced close the
+    # model answers visible content, the reply ends its own way, the event is reported,
+    # and the reasoning stops at the close (no answer tokens leak into it)
+    app = make_loopy_app(loop_guard=True)
+    try:
+        reply = app.chat(LOOPY, max_tokens=900)
+        assert reply["finish_reason"] == "stop"
+        assert reply["runtime"]["loop"] == {"period": 1}
+        cyc = chr(TOKEN_CHAR_BASE + CYCLE[0])
+        expected = "\u4e0c\u4e0c" + "".join(chr(TOKEN_CHAR_BASE + _answer(d)) for d in range(1, ANSWER_TOKENS))
+        assert reply["content"] == expected                # exactly the answer, nothing else
+        assert cyc not in reply["content"]                 # no cycle token leaked into it
+        assert reply["completion_tokens"] < 900
+    finally:
+        app.close()
+
+
+def test_budget_races_kept_their_sides_after_the_answer_change() -> None:
+    # the budget/guard race pair, re-pinned with the answering fixture: a small budget
+    # closes first and the guard never fires; a large budget loses and the guard wins
+    app = make_loopy_app(loop_guard=True)
+    try:
+        reply = app.chat(LOOPY, max_tokens=900, sampling={"thinking_budget": 256})
+        assert reply["finish_reason"] == "stop" and "loop" not in reply["runtime"]
+        reply = app.chat(LOOPY, max_tokens=900, sampling={"thinking_budget": 512})
+        assert reply["finish_reason"] == "stop" and reply["runtime"]["loop"] == {"period": 1}
+        assert reply["content"] != ""                      # the guard's win still answers
+    finally:
+        app.close()
+
+
 def test_flag_on_fires_labels_and_ends_early() -> None:
     app = make_loopy_app(loop_guard=True)
     try:
@@ -118,6 +177,7 @@ def test_flag_on_fires_labels_and_ends_early() -> None:
         # API surface stays SDK-parseable ("stop"); the event lives in runtime.loop
         assert reply["finish_reason"] == "stop"
         assert reply["runtime"]["loop"] == {"period": 1}
+        assert reply["content"] != ""                            # the answer follows the close
         assert reply["completion_tokens"] < 900                  # ended well before the cap
     finally:
         app.close()
