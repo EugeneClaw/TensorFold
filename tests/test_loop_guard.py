@@ -171,17 +171,15 @@ def test_a_stop_check_outranks_the_guard() -> None:
     assert stream.finished and stream.finish_reason == "stop"
 
 
-def test_a_cap_crossed_mid_drain_is_labelled_length_with_the_loop_reported() -> None:
-    stream = make_stream(loop_guard=LoopGuard(), max_new_tokens=FIRE)
+def test_a_fire_at_the_cap_ends_length_without_an_extra_token() -> None:
+    # a fire landing exactly at max_new_tokens ends the reply there, labelled "length"
+    # with the event reported — it must not force a close token BEYOND the requested
+    # limit (the externally visible contract; found independently by @edurdias)
+    stream = make_stream(loop_guard=LoopGuard(), max_new_tokens=FIRE, eos_ids=frozenset({10_500}))
     stream.commit(build(PREFIX, 1, 300)[:FIRE])
-    assert stream.loop_stop is not None and stream.finish_reason == ""   # latched, not capped
-    stream.convert_loop_fire()
-    for _ in stream.think_close:
-        stream.commit([stream.force.pop(0)])
-    # the cap crossed mid-drain labels "length" — the budget cut's close tokens behave
-    # the same, and the cap at the drain labels "length" too (next test)
     assert stream.finished and stream.finish_reason == "length"
-    assert stream.loop == {"period": 1}                                  # the event is still reported
+    assert len(stream.emitted) == FIRE               # nothing beyond the cap
+    assert stream.loop_stop == FIRED and stream.loop == {"period": 1}
 
 
 def test_a_cap_reached_at_the_drain_labels_length_with_the_loop_reported() -> None:

@@ -311,10 +311,12 @@ class FamilyRounds(FamilyPrefill, SharedRounds, DraftDepth):
         if (stream.finished or stream.loop_stop is not None) and len(got) < len(path):
             # Keep only rows whose tokens landed, including budget cuts, so retained caches match committed tokens.
             # loop_stop reads as "not None" both while the guard's close is pending (int)
-            # and after it settles (FIRED) — the trim is identical on either side, and a
-            # finished path never carries the transient int (the settles live in
-            # LaneStream.commit and convert_loop_fire)
-            path = path[:len(got) + 1]
+            # and after it settles (FIRED). The +1 is for a FINISHED stream: its last
+            # committed token has no absorbed row by design. A LIVE fire round (the close
+            # still draining) must retain exactly the committed tokens — keeping one more
+            # leaves the next uncommitted draft's row in the cache and answers the rest
+            # of the reply from a context that never landed
+            path = path[:len(got) + (1 if stream.finished else 0)]
         keep = len(path)
         stream.cache_len += keep
         stream.pending = [committed[keep - 1]]

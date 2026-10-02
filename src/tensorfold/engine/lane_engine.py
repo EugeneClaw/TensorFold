@@ -270,7 +270,13 @@ class LaneStream:
             return          # a required call's fix is still draining; convert once it has landed
         self.think_open = False
         if self.think_close:
-            self.force = list(self.think_close)
+            close = self.think_close
+            if self.constraint is not None and self.think_end in close:
+                # a grammar takes the reply from </think> on: stop the close there, as
+                # the thinking budget's start_close does — the trailing newlines would
+                # be answer tokens the grammar rejects
+                close = close[:close.index(self.think_end) + 1]
+            self.force = list(close)
         else:
             self.finished, self.finish_reason = True, "loop"
             self.loop_stop = FIRED   # no close armed: nothing to continue from; the latch
@@ -306,6 +312,11 @@ class LaneStream:
                 # when the close drains
                 self.loop_stop = period
                 self.loop = {"period": period}
+                if len(self.emitted) >= int(self.max_new_tokens):
+                    # the fire landed exactly at the cap: the reply ends here, labelled
+                    # "length", rather than forcing a close token beyond the limit
+                    self.finished, self.finish_reason = True, "length"
+                    self.loop_stop = FIRED
                 break
             elif len(self.emitted) >= int(self.max_new_tokens):
                 # the cap is the cap: a cap reached mid-drain cuts the close itself, so
