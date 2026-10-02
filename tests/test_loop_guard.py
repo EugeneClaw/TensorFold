@@ -200,6 +200,21 @@ def test_a_cap_reached_at_the_drain_labels_length_with_the_loop_reported() -> No
     assert stream.loop == {"period": 1}
 
 
+
+def test_a_cap_between_close_tokens_cuts_mid_drain_and_still_reports() -> None:
+    # C5, differentiated from the on-the-last-token variant: the cap lands while force
+    # still holds a close token — the close never finishes, the reply is capped "length",
+    # and the latch still settles (no finish path leaves the transient period)
+    stream = make_stream(loop_guard=LoopGuard(), max_new_tokens=FIRE + 2)
+    tokens = build(PREFIX, 1, 300)
+    stream.commit(tokens[:FIRE])
+    stream.convert_loop_fire()
+    assert len(stream.force) == 3
+    stream.commit([stream.force.pop(0)])
+    assert not stream.finished
+    stream.commit([stream.force.pop(0)])            # this token reaches the cap; 1 close token pending
+    assert stream.finished and stream.finish_reason == "length"
+    assert stream.loop_stop == FIRED and stream.loop == {"period": 1}
 def test_an_unarmed_stream_converts_straight_to_the_label() -> None:
     # defensive path: the family's conversion with no close tokens armed (arming pairs
     # think_close with think_end, so make_job cannot produce this; kept as a guarantee)

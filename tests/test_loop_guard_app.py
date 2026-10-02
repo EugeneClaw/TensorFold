@@ -170,6 +170,25 @@ def test_budget_races_kept_their_sides_after_the_answer_change() -> None:
         app.close()
 
 
+def test_the_unarmed_empty_turn_path_is_unreachable_through_arming() -> None:
+    # C6: the direct-end path (close empty -> finish "loop", empty content) is only
+    # reachable if arming can produce close-without-end or end-without-close; the
+    # server's pairing makes them one decision, so the path is structurally dead
+    from tensorfold.server.request_options import RequestOptions
+
+    class Shim:
+        _think_tokens = None
+        tokenizer = ThinkTokenizer()
+        tokenizer_lock = __import__("threading").Lock()
+
+    close, end = RequestOptions._think_close(Shim())
+    assert end == MARK and close == (12, MARK, 12, 12)   # paired by construction
+    Shim._think_tokens = None
+    Shim.tokenizer.convert_tokens_to_ids = staticmethod(lambda token: -1)
+    close, end = RequestOptions._think_close(Shim())
+    assert (close, end) == ((), -1)                      # no end token: nothing arms, both empty
+
+
 def test_flag_on_fires_labels_and_ends_early() -> None:
     app = make_loopy_app(loop_guard=True)
     try:
