@@ -319,6 +319,22 @@ def test_a_close_token_at_the_cap_labels_length_with_the_loop_reported() -> None
     assert stream.loop == {"period": 1}             # the event is still reported
 
 
+def test_conversion_is_one_shot_across_a_reopened_block() -> None:
+    # review-2 F2: after the close drains and the answer re-opens think, the family
+    # layer's next convert_loop_fire() is a no-op — the fire belonged to the first
+    # block; a second close must not inject into the answer's own think block
+    stream = make_stream(loop_guard=LoopGuard(), eos_ids=frozenset({10_500}))
+    stream.commit(build(PREFIX, 1, 300)[:FIRE])
+    stream.convert_loop_fire()          # the family's conversion on the fire round
+    assert not stream.think_open and stream.force == list(stream.think_close)
+    for _ in stream.think_close:
+        stream.commit([stream.force.pop(0)])
+    assert stream.loop_stop == FIRED and not stream.force
+    stream.think_open = True            # the answer re-opens the block
+    stream.convert_loop_fire()          # the family's next round: must not re-close
+    assert stream.force == [] and stream.loop_stop == FIRED
+
+
 def test_think_cut_stands_down_once_the_guard_owns_the_close() -> None:
     stream = make_stream(loop_guard=LoopGuard(), think_budget=256, eos_ids=frozenset({10_500}))
     tokens = build(PREFIX, 1, 300)

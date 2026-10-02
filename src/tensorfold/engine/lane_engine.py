@@ -256,8 +256,9 @@ class LaneStream:
         """The loop guard latched: close the think block through the forced windows the thinking
         budget uses; with no close tokens armed the reply ends directly, still labelled."""
 
-        if self.loop_stop is None or not self.think_open or self.finished:
-            return
+        if not isinstance(self.loop_stop, int) or not self.think_open or self.finished:
+            return                  # FIRED (the close already drained): one shot per reply —
+                                    # a re-opened block in the answer never re-closes
         if self.force:
             return          # a required call's fix is still draining; convert once it has landed
         self.think_open = False
