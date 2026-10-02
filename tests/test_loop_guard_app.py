@@ -106,7 +106,7 @@ class CycleEngine(FakeEngine):
         for item in cache:
             copy = FakeBatchItem([list(r) for r in item.rows])
             if getattr(item, "plen", None) is not None:
-                setattr(copy, "plen", item.plen)
+                copy.plen = item.plen
             out.append(copy)
         return out
 
@@ -115,7 +115,7 @@ class CycleEngine(FakeEngine):
         work = yield from super()._family_prefill_steps(stream, cache=cache, cached_tokens=cached_tokens,
                                                         checkpoints_at=checkpoints_at)
         if work:
-            setattr(work[0], "plen", len(stream.prompt_ids))   # rides the item: decode's hidden() sees it
+            work[0].plen = len(stream.prompt_ids)              # rides the item: decode's hidden() sees it
         return work
 
 
