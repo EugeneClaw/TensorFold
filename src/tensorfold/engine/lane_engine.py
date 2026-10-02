@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import time
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Callable, Iterator, Literal, Sequence
 
 from tensorfold.engine.family_prefill import drain
 from tensorfold.engine.lane_family import FamilyRounds
@@ -183,7 +183,7 @@ class LaneStream:
     # fire's period here, the family layer converts it to a forced think close, and the finish
     # lands "loop" when the close drains
     loop_guard: Any = None
-    loop_stop: int | str | None = None            # the period, then FIRED once the close drains
+    loop_stop: int | Literal["fired"] | None = None   # the period, then the FIRED sentinel once the close drains
     loop: dict[str, int] | None = None
     # a request that must call a tool: its answer opens a call to an offered tool (call_gate.CallGate)
     call_gate: Any = None
