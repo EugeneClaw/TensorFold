@@ -5,7 +5,7 @@ non-periodic prefix fires iff L >= LOOP_MIN_RUN + period and the detected region
 starts at least WARM_IN tokens into the reply. Engine tests drive a bare
 LaneStream (no model): commit() latches the fire without finishing, the family
 layer converts the latch (think closes, the close tokens join ``force``), and
-the finish lands "loop" only after those forced tokens drain through commit().
+the close drains through commit(), and the reply continues with the model's answer: the finish is the answer's own (stop/length), with the event reported on ``loop``.
 """
 
 from __future__ import annotations
@@ -112,8 +112,8 @@ def test_commit_latches_the_fire_without_finishing() -> None:
     assert not stream.finished and stream.finish_reason == ""
 
 
-def test_the_finish_lands_only_after_the_forced_close_drains() -> None:
-    stream = make_stream(loop_guard=LoopGuard())
+def test_the_close_drains_and_the_answer_continues() -> None:
+    stream = make_stream(loop_guard=LoopGuard(), eos_ids=frozenset({10_500}))
     tokens = build(PREFIX, 1, 300)
     stream.commit(tokens[:FIRE])
     assert stream.loop_stop is not None and not stream.finished
@@ -123,10 +123,12 @@ def test_the_finish_lands_only_after_the_forced_close_drains() -> None:
     stream.force = list(stream.think_close)
     for _ in stream.think_close:
         stream.commit([stream.force.pop(0)])
-    # the finish lands the moment force drains: on the last close token, so the reply
-    # ends </think>-closed with empty content (the budget-cut shape)
+    # the close drained: the reply continues (the budget-cut shape) instead of ending
     assert stream.emitted[-3:] == [7, 8, 9]
-    assert stream.finished and stream.finish_reason == "loop" and not stream.force
+    assert not stream.finished and not stream.force and stream.loop_stop is None
+    assert stream.loop == {"period": 1}                     # the event stays reported
+    stream.commit([10_500])                                 # the answer's own end
+    assert stream.finished and stream.finish_reason == "stop"
 
 
 def test_an_unarmed_config_latches_for_the_family_to_degrade() -> None:
@@ -143,7 +145,7 @@ def test_the_guard_is_inert_outside_the_think_block() -> None:
     assert not stream.finished and stream.loop_stop is None and stream.finish_reason == ""
 
 
-def test_a_latched_stream_cannot_refire_and_runs_to_its_labelled_end() -> None:
+def test_a_latched_stream_cannot_refire_and_the_answer_continues() -> None:
     stream = make_stream(loop_guard=LoopGuard())
     tokens = build(PREFIX, 1, 300)
     stream.commit(tokens[:FIRE])
@@ -152,8 +154,8 @@ def test_a_latched_stream_cannot_refire_and_runs_to_its_labelled_end() -> None:
     for _ in stream.think_close:
         stream.commit([stream.force.pop(0)])
     stream.commit(tokens[FIRE:FIRE + 40])          # still cyclic text after think: no refire
-    assert stream.finished and stream.finish_reason == "loop"
-    assert stream.loop == {"period": 1}
+    assert not stream.finished and stream.loop_stop is None
+    assert stream.loop == {"period": 1}            # the event stays reported
     assert stream.emitted[FIRE:FIRE + 3] == [7, 8, 9]
 
 
@@ -176,15 +178,15 @@ def test_a_cap_crossed_mid_drain_is_labelled_length_with_the_loop_reported() -> 
     stream.convert_loop_fire()
     for _ in stream.think_close:
         stream.commit([stream.force.pop(0)])
-    # the cap crossed mid-drain labels "length" — the budget cut's close tokens behave the
-    # same; the drain landing exactly on the cap keeps the label (next test)
+    # the cap crossed mid-drain labels "length" — the budget cut's close tokens behave
+    # the same, and the cap at the drain labels "length" too (next test)
     assert stream.finished and stream.finish_reason == "length"
     assert stream.loop == {"period": 1}                                  # the event is still reported
 
 
-def test_the_drain_beating_the_cap_is_the_precedence_when_they_land_together() -> None:
-    # the cap's elif sits after the drain arm: a close token that lands with
-    # len(emitted) == max_new_tokens still finishes "loop", not "length"
+def test_a_cap_reached_at_the_drain_labels_length_with_the_loop_reported() -> None:
+    # the reply continues after the close, so the cap is the cap: a close token that
+    # reaches it labels "length", the event still reported
     stream = make_stream(loop_guard=LoopGuard(), max_new_tokens=FIRE + 3)
     tokens = build(PREFIX, 1, 300)
     stream.commit(tokens[:FIRE])
@@ -194,7 +196,8 @@ def test_the_drain_beating_the_cap_is_the_precedence_when_they_land_together() -
     stream.commit([stream.force.pop(0)])
     assert not stream.finished
     stream.commit([stream.force.pop(0)])          # this token reaches the cap too
-    assert stream.finished and stream.finish_reason == "loop"
+    assert stream.finished and stream.finish_reason == "length"
+    assert stream.loop == {"period": 1}
 
 
 def test_an_unarmed_stream_converts_straight_to_the_label() -> None:
@@ -217,8 +220,8 @@ def test_thinking_off_never_arms_the_guard() -> None:
 def test_a_required_call_fix_drains_before_the_loop_close_appends() -> None:
     # a fix landing after the latch must not clobber the pending think close: the
     # conversion defers, the fix drains through force, then the close still lands
-    # and the reply still labels "loop"
-    stream = make_stream(loop_guard=LoopGuard())
+    # and the answer continues
+    stream = make_stream(loop_guard=LoopGuard(), eos_ids=frozenset({10_500}))
     stream.commit(build(PREFIX, 1, 300)[:FIRE])
     assert stream.loop_stop is not None and not stream.finished and not stream.force
     stream.force = [5, 6]                          # a required call's fix is draining
@@ -229,7 +232,9 @@ def test_a_required_call_fix_drains_before_the_loop_close_appends() -> None:
     assert not stream.think_open and stream.force == [7, 8, 9]
     for _ in stream.force.copy():
         stream.commit([stream.force.pop(0)])       # drain the fix's close through commit
-    assert stream.finished and stream.finish_reason == "loop"
+    assert not stream.finished and stream.loop == {"period": 1}
+    stream.commit([10_500])                        # the answer's own end
+    assert stream.finished and stream.finish_reason == "stop"
 
 
 def test_think_cut_stands_down_once_the_guard_owns_the_close() -> None:

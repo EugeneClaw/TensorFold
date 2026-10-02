@@ -293,16 +293,19 @@ class LaneStream:
                 self.loop_stop = period
                 self.loop = {"period": period}
                 break
-            elif (self.loop_stop is not None and not self.think_open and not self.force):
-                # the loop's forced think close has drained (this beat may be its last token):
-                # the label outranks the cap when both land together. A required call's fix
-                # drains first: conversion waits for it (think still open here), so this arm
-                # must not fire until the close itself has landed
-                self.finished = True
-                self.finish_reason = "loop"
             elif len(self.emitted) >= int(self.max_new_tokens):
                 self.finished = True
                 self.finish_reason = "length"
+            elif (self.loop_stop is not None and not self.think_open and not self.force):
+                # the forced think close has drained (this beat may be its last token):
+                # the reply continues as the thinking budget's does — the model answers
+                # from the closed block, and the finish is the answer's own (stop/length;
+                # the cap above is the cap). The fire can not repeat: the guard only
+                # checks while think is open, and the event stays reported on
+                # stream.loop / the log line. A required call's fix drains first:
+                # conversion waits for it (think still open here), so this arm must not
+                # run until the close itself has landed
+                self.loop_stop = None
         return landed
 
 
