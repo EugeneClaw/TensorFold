@@ -78,8 +78,8 @@ class CycleFamily(FakeFamily):
         return CYCLE[(r - T0) % len(CYCLE)]
 
 def _answer(r: int) -> int:
-    # the post-close answer: _healthy far past its EOS wrap (proven plain text — no
-    # tool-call opener, nothing split_thinking holds back), deterministic
+    # the post-close answer: _healthy far past its EOS wrap, chosen so it is plain text
+    # (no tool-call opener, nothing split_thinking holds back) and deterministic
     value = _healthy(1000 + r)
     return 91 if value == CYCLE[0] else value     # 90 is the cycle token: never answer with it
 
@@ -193,14 +193,25 @@ def test_the_unarmed_empty_turn_path_is_unreachable_through_arming() -> None:
     Shim.tokenizer.convert_tokens_to_ids = staticmethod(lambda token: -1)
     close, end = RequestOptions._think_close(Shim())
     assert (close, end) == ((), -1)                      # no end token: nothing arms, both empty
-    # the production branch: an armed app's job carries the SAME pairing (not the shim's)
+    # the armed branch on the production self: the app IS a RequestOptions, so the real
+    # instance's pairing (and its cache, which every later job reads) pins here
     app = make_loopy_app(loop_guard=True)
     try:
-        app.chat(HEALTHY, max_tokens=50)
-        jobs = app._jobs if hasattr(app, "_jobs") else []
-        if jobs:
-            job = jobs[-1]
-            assert job.think_close == (12, MARK, 12, 12) and job.think_end == MARK
+        close, end = RequestOptions._think_close(app)
+        assert (close, end) == ((12, MARK, 12, 12), MARK)
+        assert app._think_tokens == (close, end)         # cached: later jobs read this
+        # the unk guard: an end id colliding with unk must also refuse to arm
+        app2 = make_loopy_app(loop_guard=True)
+        try:
+            app2._think_tokens = None
+            real = app2.tokenizer.convert_tokens_to_ids
+            app2.tokenizer.convert_tokens_to_ids = staticmethod(
+                lambda token: app2.tokenizer.unk_token_id if token == "</think>" else -1)
+            close, end = RequestOptions._think_close(app2)
+            assert (close, end) == ((), -1)              # unk collision: nothing arms
+            app2.tokenizer.convert_tokens_to_ids = staticmethod(real)
+        finally:
+            app2.close()
     finally:
         app.close()
 

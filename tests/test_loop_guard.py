@@ -200,7 +200,6 @@ def test_a_cap_reached_at_the_drain_labels_length_with_the_loop_reported() -> No
     assert stream.loop == {"period": 1}
 
 
-
 def test_a_cap_between_close_tokens_cuts_mid_drain_and_still_reports() -> None:
     # C5, differentiated from the on-the-last-token variant: the cap lands while force
     # still holds a close token — the close never finishes, the reply is capped "length",
@@ -225,6 +224,7 @@ def test_an_unarmed_stream_converts_straight_to_the_label() -> None:
     assert stream.loop_stop is not None and stream.think_open
     stream.convert_loop_fire()
     assert stream.finished and stream.finish_reason == "loop" and not stream.force
+    assert stream.loop_stop == FIRED
 
 
 def test_thinking_off_never_arms_the_guard() -> None:
@@ -271,6 +271,7 @@ def test_a_reopened_think_block_never_fires_twice() -> None:
     stream.commit(build(20, 1, 300) + [10_500])     # a second full cycle, then EOS
     assert stream.finished and stream.finish_reason == "stop"
     assert stream.loop == {"period": 1}             # one fire, reported once
+    assert stream.loop_stop == FIRED and not stream.force   # the latch never reset: no second fire
 
 
 def test_the_budget_rearms_for_a_block_the_answer_reopens() -> None:
@@ -319,22 +320,6 @@ def test_the_latch_state_is_deterministic_on_every_finish_path() -> None:
         stream.commit([7_000 + (len(stream.emitted) % 4)])
     assert stream.finish_reason == "length" and stream.loop_stop == FIRED
     assert stream.loop == {"period": 1}
-
-
-def test_a_close_token_at_the_cap_labels_length_with_the_loop_reported() -> None:
-    # F4 collision: the new precedence — the cap outranks the drain arm — must differ
-    # from the reviewed PR's ordering, where the same landing kept the loop label
-    stream = make_stream(loop_guard=LoopGuard(), max_new_tokens=FIRE + 3)
-    tokens = build(PREFIX, 1, 300)
-    stream.commit(tokens[:FIRE])
-    stream.convert_loop_fire()
-    assert len(stream.force) == 3
-    stream.commit([stream.force.pop(0)])
-    stream.commit([stream.force.pop(0)])
-    assert not stream.finished
-    stream.commit([stream.force.pop(0)])            # reaches the cap exactly
-    assert stream.finished and stream.finish_reason == "length"
-    assert stream.loop == {"period": 1}             # the event is still reported
 
 
 def test_conversion_is_one_shot_across_a_reopened_block() -> None:
