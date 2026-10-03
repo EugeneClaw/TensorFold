@@ -258,7 +258,13 @@ class LaneStream:
             return          # a required call's fix is still draining; convert once it has landed
         self.think_open = False
         if self.think_close:
-            self.force = list(self.think_close)
+            close = self.think_close
+            if self.constraint is not None and self.think_end in close:
+                # a grammar takes the reply from </think> on: stop the close there, as
+                # the thinking budget's start_close does — the trailing newlines would
+                # be answer tokens the grammar rejects
+                close = close[:close.index(self.think_end) + 1]
+            self.force = list(close)
         else:
             self.finished, self.finish_reason = True, "loop"
 
@@ -266,6 +272,7 @@ class LaneStream:
         """Append committed tokens until the stream finishes; return what landed."""
 
         landed: list[int] = []
+        drain_pending = False
         for token in tokens:
             if self.finished:
                 break
@@ -292,17 +299,22 @@ class LaneStream:
                 # when the close drains
                 self.loop_stop = period
                 self.loop = {"period": period}
+                if len(self.emitted) >= int(self.max_new_tokens):
+                    # the fire landed exactly at the cap: the reply ends here, labelled
+                    # "length", rather than forcing a close token beyond the limit
+                    self.finished, self.finish_reason = True, "length"
                 break
             elif (self.loop_stop is not None and not self.think_open and not self.force):
-                # the loop's forced think close has drained (this beat may be its last token):
-                # the label outranks the cap when both land together. A required call's fix
-                # drains first: conversion waits for it (think still open here), so this arm
-                # must not fire until the close itself has landed
-                self.finished = True
-                self.finish_reason = "loop"
+                # the close drained on this beat: finish labelled AFTER this commit ends —
+                # a drafted forced window can carry several close tokens in one commit and
+                # finishing now would swallow the rest
+                drain_pending = True
             elif len(self.emitted) >= int(self.max_new_tokens):
                 self.finished = True
                 self.finish_reason = "length"
+        if drain_pending and not self.finished:
+            self.finished = True
+            self.finish_reason = "loop"
         return landed
 
 
