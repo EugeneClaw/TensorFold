@@ -311,37 +311,38 @@ fn moe(p: *const Prompt, x: *const fwd.Ctx, e: mtl.ComputeEncoder, w: *const wts
     {
         var gsp = fwd.SpanGuard.begin(x, &e, .routed);
         defer gsp.end(x, &e);
-    if (s & Class.routed == 0 and path == .rows) { // each expert's sorted pairs at its width
-        wide.bySorted(
-            &p.mm.wide.?,
-            e,
-            .{ .w = w.gate, .up = w.up, .experts = E, .repeat = c.topk, .lim = c.swiglu_limit },
-            x_in,
-            p.offsets,
-            p.order,
-            p.act,
-            c.moe_inter,
-            n,
-        );
-        wide.bySorted(
-            &p.mm.wide.?,
-            e,
-            .{ .w = w.down, .experts = E, .repeat = 1 },
-            p.act,
-            p.offsets,
-            p.order,
-            p.yp,
-            D,
-            n,
-        );
-    } else if (s & Class.routed == 0 and path == .gather) {
-        const gg = wide.gather;
-        gg.encode(e, p.mm.wide.?.gather[0], w.gate, w.up, .{ .x = x_in, .offsets = p.offsets, .order = p.order, .out = p.act }, n, E, c.topk, c.moe_inter, c.swiglu_limit);
-        gg.encode(e, p.mm.wide.?.gather[1], w.down, null, .{ .x = p.act, .offsets = p.offsets, .order = p.order, .out = p.yp }, n, E, 1, D, 0);
-    } else if (s & Class.routed == 0) { // down's rows put back in (row, slot) order for the combine
-        const mm = if (path == .mm4) p.mm.mm_bf16 else p.mm.wide.?.mm2;
-        gateUp(p, mm, x, e, w, x_in, M, n);
-        affine_mm.gatherTo(e, mm, p.act, p.sums, w.down, p.offsets, p.yp, p.order, n, E);
+        if (s & Class.routed == 0 and path == .rows) { // each expert's sorted pairs at its width
+            wide.bySorted(
+                &p.mm.wide.?,
+                e,
+                .{ .w = w.gate, .up = w.up, .experts = E, .repeat = c.topk, .lim = c.swiglu_limit },
+                x_in,
+                p.offsets,
+                p.order,
+                p.act,
+                c.moe_inter,
+                n,
+            );
+            wide.bySorted(
+                &p.mm.wide.?,
+                e,
+                .{ .w = w.down, .experts = E, .repeat = 1 },
+                p.act,
+                p.offsets,
+                p.order,
+                p.yp,
+                D,
+                n,
+            );
+        } else if (s & Class.routed == 0 and path == .gather) {
+            const gg = wide.gather;
+            gg.encode(e, p.mm.wide.?.gather[0], w.gate, w.up, .{ .x = x_in, .offsets = p.offsets, .order = p.order, .out = p.act }, n, E, c.topk, c.moe_inter, c.swiglu_limit);
+            gg.encode(e, p.mm.wide.?.gather[1], w.down, null, .{ .x = p.act, .offsets = p.offsets, .order = p.order, .out = p.yp }, n, E, 1, D, 0);
+        } else if (s & Class.routed == 0) { // down's rows put back in (row, slot) order for the combine
+            const mm = if (path == .mm4) p.mm.mm_bf16 else p.mm.wide.?.mm2;
+            gateUp(p, mm, x, e, w, x_in, M, n);
+            affine_mm.gatherTo(e, mm, p.act, p.sums, w.down, p.offsets, p.yp, p.order, n, E);
+        }
     }
     {
         var gsp = fwd.SpanGuard.begin(x, &e, .combine);
@@ -352,7 +353,6 @@ fn moe(p: *const Prompt, x: *const fwd.Ctx, e: mtl.ComputeEncoder, w: *const wts
         fwd.shape(e, 3, .{ M, c.topk });
         bind(e, 4, .{out});
         e.dispatchThreads(size(M * D, 1, 1), size(256, 1, 1));
-    }
     }
 }
 
