@@ -184,7 +184,7 @@ pub const Engine = struct {
         e.copy_min = if (platform.c.getenv("GLM_COPY")) |v| std.math.clamp(std.fmt.parseInt(u32, std.mem.span(v), 10) catch 0, 0, 8) else 0;
         e.rank_log = if (platform.c.getenv("GLM_RANKS")) |v| v[0] == '1' else false;
         e.draft_depth = if (platform.c.getenv("GLM_DRAFT_DEPTH")) |v| std.fmt.parseInt(u32, std.mem.span(v), 10) catch 0 else 0;
-        e.adaptive_depth = if (platform.c.getenv("GLM_ADAPTIVE_DEPTH")) |v| v.len > 0 and v[0] == '1' else false;
+        e.adaptive_depth = if (platform.c.getenv("GLM_ADAPTIVE_DEPTH")) |v| v[0] != 0 and v[0] == '1' else false;
         if (platform.c.getenv("GLM_ADAPTIVE_THRESHOLD")) |v| e.adaptive_threshold = std.fmt.parseFloat(f64, std.mem.span(v)) catch 0.65;
         if (platform.c.getenv("GLM_ADAPTIVE_MAX")) |v| e.adaptive_max = std.fmt.parseInt(u32, std.mem.span(v), 10) catch 3 else e.adaptive_max = 3;
         if (platform.c.getenv("GLM_ADAPTIVE_MIN")) |v| e.adaptive_min = std.fmt.parseInt(u32, std.mem.span(v), 10) catch 2 else e.adaptive_min = 2;
