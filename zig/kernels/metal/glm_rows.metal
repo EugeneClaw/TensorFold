@@ -262,10 +262,14 @@ template <int BM, int BN>
         xs_pad[r * A_PAD + c] = (global_r < d.rows && global_c < d.k) ? float(X[x_base + long(r) * d.ldx + k0 + c]) : 0.0f;
       }
       // Cooperatively load W[BN rows of K=8] from device bf16 into ws_pad as W^T [BK=8, BN] (padded col-major).
+      // Column base is THREADGROUP-scoped (tg.x * BN): all 8 N-simdgroups cooperate on the one full-width
+      // tile. (The shipped kernel used the per-simdgroup n0 here, so 8 copies of different W slices raced
+      // into the same ws_pad slots - review VIII defect 1.)
+      const int n_base = int(tg.x) * BN;
       for (int e = int(ti); e < 8 * BN; e += TG_THREADS) {
         const int kk = e / BN; // K position (rows of B)
         const int nn = e % BN; // W column (cols of B)
-        const int global_nn = n0 + nn;
+        const int global_nn = n_base + nn;
         const int global_kk = k0 + kk;
         ws_pad[kk * B_PAD + nn] = (global_nn < d.n && global_kk < d.k) ? float(W[long(global_nn) * d.k + global_kk]) : 0.0f;
       }
@@ -273,7 +277,10 @@ template <int BM, int BN>
       simdgroup_matrix<float, 8, 8> a_mat;
       simdgroup_matrix<float, 8, 8> b_mat;
       simdgroup_load(a_mat, xs_pad, ulong(A_PAD));
-      simdgroup_load(b_mat, ws_pad, ulong(B_PAD), ulong2(0, 0), true);
+      // This simdgroup's 8-column slice of the tile (review VIII defect 2: the shipped load read
+      // columns 0-7 for every N-simdgroup, so columns 8-63 were copies of 0-7). transpose=true is
+      // correct here: stored [kk][nn_slice] read transposed gives B[j][i] = W[col_i][k_j].
+      simdgroup_load(b_mat, ws_pad + sg_n * 8, ulong(B_PAD), ulong2(0, 0), true);
       simdgroup_multiply_accumulate(acc, a_mat, b_mat, acc);
       threadgroup_barrier(mem_flags::mem_threadgroup);
     }
