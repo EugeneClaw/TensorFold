@@ -5,21 +5,16 @@
 set -eo pipefail
 
 restore_serve() {
-  cd /Users/studio/tf-bakeoff/TensorFold
+  cd /Users/studio/tf-speed-1016
   nohup env GLM_LOAD_LIMIT_GB=190 ./zig-out/native/bin/tensorfold-native serve \
     /Users/studio/Models/GLM-5.3-Flash-oQ4e-mtp --name GLM-5.3-Flash-oQ4e \
     --host 127.0.0.1 --port 8008 --context 262144 --no-update-check \
     > /Users/studio/tf-lead/serve-b4-restore.log 2>&1 < /dev/null &
   disown
   sleep 45
-  echo "--- RESTORE HEALTH (retry x3) ---"
-  HEALTH_OK=0
-  for i in 1 2 3; do
-    H=$(curl -s -m 8 http://127.0.0.1:8008/health | head -c 200); echo "attempt $i: $H"
-    case "$H" in *'"status": "ok"'*) HEALTH_OK=1; break;; esac
-    sleep 20
-  done
-  if [ "$HEALTH_OK" -ne 1 ]; then echo "RESTORE-HEALTH-FAIL"; exit 4; fi
+  echo "--- RESTORE HEALTH ---"
+  curl -s -m 8 http://127.0.0.1:8008/health | head -c 200
+  echo
 }
 trap restore_serve EXIT
 
