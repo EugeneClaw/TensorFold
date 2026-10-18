@@ -21,8 +21,18 @@ const size = fwd.size;
 /// Chunk heights a load picks from (the tallest whose buffers fit this Mac's limit); expert parallel keeps one exchange's.
 pub const heights = [_]u32{ 16384, 8192, 6144, 4096, 2048 };
 pub const max_rows = heights[0];
-/// Sparse rows whose block scores one selection pass holds.
-const select_rows = 256;
+/// Sparse rows whose block scores one selection pass holds: 256, the shipped v1.0.12 geometry; the
+/// census rank-1 widening GLM_SELECT_WIDE=1 holds 2048 — mla_select's slice loop then launches 88
+/// instead of 704 kernels per 8192-row chunk (11 layers x 4 instead of 32 slices, 2 kernels each).
+/// Host-only: glm_index_scores_nax writes and glm_index_select reads per-row state (a row's own block
+/// span, in block order), so widening the pass is bit-exact by construction; the flag is byte-gated
+/// flag-ON (p16k + p131k at d0 + d3 = ef9a54e1534555f2) per VAL-RA-001. DEFAULT OFF.
+fn selectRows() u32 {
+    if (std.c.getenv("GLM_SELECT_WIDE")) |v| {
+        if (v[0] != 0 and v[0] == '1') return 2048;
+    }
+    return 256;
+}
 
 /// The chunk's buffers beyond the decode scratch's (whose stream fields `streams` points at prompt-sized ones).
 pub const Prompt = struct {
@@ -122,7 +132,7 @@ fn buffers(p: *Prompt, arena: *st.Arena, c: *const cfg.Config, decode: *const st
     p.streams.comb = try big.of(arena, R * 16 * 4);
     p.streams.inv = try big.of(arena, R * 4);
     p.streams.mixes = try big.of(arena, R * hc.partBytes(.{ .width = @intCast(D), .sinkhorn = 0, .eps_e9 = 0 }));
-    p.sscore = try big.of(arena, select_rows * (@as(usize, cap) / c.kpool + 1) * 4);
+    p.sscore = try big.of(arena, selectRows() * (@as(usize, cap) / c.kpool + 1) * 4);
     p.pick = try big.of(arena, n * 4);
     p.wts = try big.of(arena, n * 4);
     p.counts = try big.of(arena, blocks * c.experts * 4);
@@ -513,8 +523,9 @@ fn mla(p: *const Prompt, x: *const fwd.Ctx, e: mtl.ComputeEncoder, mi: usize, w:
             e.dispatchThreads(size(width, dense, 1), size(256, 1, 1));
         }
         var r0 = dense;
-        while (r0 < M) : (r0 += select_rows) {
-            const sb = @min(select_rows, M - r0);
+        const pass = selectRows();
+        while (r0 < M) : (r0 += pass) {
+            const sb = @min(pass, M - r0);
             selectKeys(p, x, e, mi, p.qp.at((@as(usize, r0) * c.qrProj() + c.mla_heads * c.nope) * 2), p.iw.at(@as(usize, r0) * c.i_heads * 2), p.indices.at(@as(usize, r0) * width * 4), sb, pos + r0);
         }
     }

@@ -12,6 +12,14 @@ restore_serve() {
     > /Users/studio/tf-lead/serve-b4-restore.log 2>&1 < /dev/null &
   disown
   sleep 45
+  echo "--- RESTORE HEALTH (retry x3) ---"
+  HEALTH_OK=0
+  for i in 1 2 3; do
+    H=$(curl -s -m 8 http://127.0.0.1:8008/health | head -c 200); echo "attempt $i: $H"
+    case "$H" in *'"status": "ok"'*) HEALTH_OK=1; break;; esac
+    sleep 20
+  done
+  if [ "$HEALTH_OK" -ne 1 ]; then echo "RESTORE-HEALTH-FAIL"; exit 4; fi
 }
 trap restore_serve EXIT
 
