@@ -18,7 +18,8 @@ fn plainRound(e: *Engine, x: *fwd.Ctx, from: ?Ref, to: Ref, pos: u32) Pending {
     const fence = e.round_fence.?;
     const cb = e.queue.commandBuffer();
     if (from == null and e.ev > 0) cb.waitFor(e.event, e.ev);
-    const enc = cb.compute(.serial);
+    const dt: mtl.types.DispatchType = if (e.moe_overlap) .concurrent else .serial;
+    const enc = cb.compute(dt);
     if (e.rec) |rec| rec.beginCommand(cb) catch {};
     const b = .{ .cb = cb, .enc = enc };
     if (from != null) fence.wait(b.enc);

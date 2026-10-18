@@ -416,7 +416,8 @@ pub const Engine = struct {
     pub fn begin(e: *Engine) struct { cb: mtl.CommandBuffer, enc: mtl.ComputeEncoder } {
         const cb = e.queue.commandBuffer();
         if (e.ev > 0) cb.waitFor(e.event, e.ev);
-        const enc = cb.compute(.serial);
+        const enc = cb.compute(.serial); // GLM_MOE_OVERLAP (.concurrent) FALSIFIED on AGX G17X: reorders dependent kernels (E2c, mission-1) - serial is the only exact dispatch
+
         if (e.rec) |rec| rec.beginCommand(cb) catch {};
         return .{ .cb = cb, .enc = enc };
     }
