@@ -3,6 +3,7 @@
 # finer mla_proj/mla_attn and kda_proj/kda_attn class breakdown. Default-off enhancement.
 # Method (pinned): chunk at position >=100k of p131k; profile separate proj/attn halves.
 set -eo pipefail
+# note: exit codes captured via "|| true" + immediate capture so failures are recorded, not silent
 
 restore_serve() {
   cd /Users/studio/tf-speed-1016
@@ -42,8 +43,8 @@ echo "=== [3] B4 LATE-chunk profile at pos=100000 (chunk rows=16384, p143000) ==
 echo "--- [3a] LATE chunk profile (pos=100000) ---"
 GLM_LOAD_LIMIT_GB=190 GLM_CAP=262144 GLM_MAX=4 GLM_DEPTHS=0 GLM_RUNS=1 \
   GLM_PROMPT_PROFILE=10 GLM_PROMPT_PROFILE_POS=100000 GLM_PROMPT_PROFILE_ROWS=16384 \
-  $BR/zig-out/bin/tf-glm-run $MODEL $PROMPT > $REC 2>&1
-PROFILE_EXIT=$?
+  $BR/zig-out/bin/tf-glm-run $MODEL $PROMPT > $REC 2>&1 || PROFILE_EXIT=$?
+if [ -z "${PROFILE_EXIT:-}" ]; then PROFILE_EXIT=0; fi
 echo "PROFILE-EXIT=$PROFILE_EXIT"
 tail -50 $REC
 
