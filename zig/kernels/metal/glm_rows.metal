@@ -224,7 +224,8 @@ template <int BITS, bool GLU>
 // OUT[m, c] = sum_k X[m, k] * W[c, k] on tensor units: bf16 X / W loaded cooperatively into threadgroup float buffers,
 // then 8x8 simdgroup MMA tiles accumulate in fp32; per-thread fp32->bf16 writeback via the same writeback buffer.
 // Each threadgroup covers (BM x BN) output tile; SG_M x SG_N simdgroups of 32 lanes tile it as 8x8 sub-blocks.
-// A is X[BM, BK=8] loaded row-major; B is W^T[BK=8, BN] (W is [N, K] row-major, transpose=true at matmul).
+// A is X[BM, BK=8] loaded row-major; B is the W^T staging (W is [N, K] row-major) read
+// non-transposed: B[l][j] = W[n0+j][k0+l].
 // Grid (n/BN, rows/BM, 1) threadgroups of (SG_M*SG_N*32) threads. Receipt: eh_proj prefill replaces glm_rows_bf16.
 template <int BM, int BN>
 [[kernel]] void glm_rows_bf16_nax(const device bfloat* X [[buffer(0)]], const device bfloat* W [[buffer(1)]],
@@ -277,10 +278,10 @@ template <int BM, int BN>
       simdgroup_matrix<float, 8, 8> a_mat;
       simdgroup_matrix<float, 8, 8> b_mat;
       simdgroup_load(a_mat, xs_pad, ulong(A_PAD));
-      // This simdgroup's 8-column slice of the tile (review VIII defect 2: the shipped load read
-      // columns 0-7 for every N-simdgroup, so columns 8-63 were copies of 0-7). transpose=true is
-      // correct here: stored [kk][nn_slice] read transposed gives B[j][i] = W[col_i][k_j].
-      simdgroup_load(b_mat, ws_pad + sg_n * 8, ulong(B_PAD), ulong2(0, 0), true);
+      // This simdgroup's 8-column slice of the tile (review VIII defect 2 fixed: the per-simdgroup
+      // W slice is staged [kk][nn] = W^T, so the load is NON-transposed: b[l][j] = W[n0+j][k0+l].
+      // The shipped transpose=true read sums over the n index with k fixed - uncorrelated output.)
+      simdgroup_load(b_mat, ws_pad + sg_n * 8, ulong(B_PAD), ulong2(0, 0), false);
       simdgroup_multiply_accumulate(acc, a_mat, b_mat, acc);
       threadgroup_barrier(mem_flags::mem_threadgroup);
     }
