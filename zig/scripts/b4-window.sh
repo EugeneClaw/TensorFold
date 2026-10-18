@@ -4,6 +4,17 @@
 # Method (pinned): chunk at position >=100k of p131k; profile separate proj/attn halves.
 set -eo pipefail
 
+restore_serve() {
+  cd /Users/studio/tf-bakeoff/TensorFold
+  nohup env GLM_LOAD_LIMIT_GB=190 ./zig-out/native/bin/tensorfold-native serve \
+    /Users/studio/Models/GLM-5.3-Flash-oQ4e-mtp --name GLM-5.3-Flash-oQ4e \
+    --host 127.0.0.1 --port 8008 --context 262144 --no-update-check \
+    > /Users/studio/tf-lead/serve-b4-restore.log 2>&1 < /dev/null &
+  disown
+  sleep 45
+}
+trap restore_serve EXIT
+
 BR=/Users/studio/tf-speed-1016
 LOG=/Users/studio/tf-lead/b4-window.log
 REC=/Users/studio/tf-lead/b4-prompt-profile.log
@@ -56,14 +67,4 @@ for r in rows:
         print(f"  {r['name']:12s} {r['med_ms']:8.2f}  {r['min_ms']:8.2f}  {r['max_ms']:8.2f}   {r['class_ms']:8.2f}    {r['class_pct']:5.1f}")
 EOF
 
-echo "=== [5] restore resident serve ==="
-cd /Users/studio/tf-bakeoff/TensorFold
-nohup env GLM_LOAD_LIMIT_GB=190 ./zig-out/native/bin/tensorfold-native serve \
-  /Users/studio/Models/GLM-5.3-Flash-oQ4e-mtp --name GLM-5.3-Flash-oQ4e \
-  --host 127.0.0.1 --port 8008 --context 262144 --no-update-check \
-  > /Users/studio/tf-lead/serve-b4-restore.log 2>&1 < /dev/null &
-sleep 60
-echo "--- HEALTH ---"
-curl -s -m 5 http://127.0.0.1:8008/health | head -c 200
-echo
-echo "=== B4 WINDOW COMPLETE ==="
+echo "=== [5] restore handled by EXIT trap ==="

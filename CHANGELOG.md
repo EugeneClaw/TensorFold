@@ -1,4 +1,4 @@
-# What's new in TensorFold
+''# What's new in TensorFold
 
 Each release's page on GitHub has its notes and measurements. See [the 1.0.0 release notes](RELEASE-NOTES-1.0.0.md) for the native binary's supported models and migration details.
 
@@ -110,6 +110,14 @@ Known issues:
 - GLM-5.3-Flash's ModelOpt NVFP4 checkpoint on two CUDA ranks was not run for this release: on two GB10s the weights leave no room for its streams beside the memory reserve. Code that path shares changed in this release (NVFP4 scale planes and their tensor-parallel slices, the copy-source owner, NCCL's allocations and the RoCE cap on the ranks), so it stays a known issue until its regression run; the EXL3 checkpoint is the two-rank path measured for this release.
 - The reported M3 Ultra peak for Qwen3.8-27B on Metal is 4.1 GB higher than 1.0.12 because the second DeltaNet bank is allocated at startup; reducing that allocation remains follow-up work.
 - Flash Next on Metal with explicit --parallel 2 or more retains a cache-count/performance issue: on an M3 Ultra with the MLX 4-bit checkpoint, 9 of 12 chat steps reused 17 to 312 fewer tokens than the single host, with the same output tokens, and a lone request decoded 7% slower. The default --parallel auto uses the single host and matched 1.0.12's cache counts; the separate shared-session repair is held for a later 1.1.x and is absent from the current 1.1.1 series.
+
+## Local branch (tf-speed rounds 1-2, not upstream)
+
+
+- GLM-5.3-Flash prefill: the eh_proj draft projection runs on a tensor-unit bf16 kernel (`glm_rows_bf16_nax<8,64>`, `wide.bf16Nax`) instead of the scalar wide path — 69.7 → 27.6 ms per 2048-row chunk; the drafted-prefill tax at 131k drops from 7.3% to 3.3%, with reply hashes byte-equal to the row-kernel path on 16k and 131k prompts at depths 0 and 3.
+- `--draft-depth N` and `--adaptive` (env `GLM_DRAFT_DEPTH`, `GLM_ADAPTIVE_DEPTH`, `GLM_ADAPTIVE_THRESHOLD`, `GLM_ADAPTIVE_HIGH`, `GLM_ADAPTIVE_WINDOW`, `GLM_ADAPTIVE_MIN/MAX`): the MTP draft depth is settable, and adaptive mode drops depth 3→2 when the rolling accept rate falls under the threshold (default 0.65) and restores at 0.75. Emitted tokens are unchanged at every depth (hashes equal depth 0); on a 7-prompt mixed-context set the controller logged 12 switches and held high-accept prompts at parity.
+- Profiling: `GLM_COUNTER_SPANS=1` records per-class GPU counter spans (default off; the hardware counter path is broken on AGX G17X / macOS 27.0 — an allocated MTLCounterSampleBuffer crashes the next encoder's first setPipeline); `GLM_PROMPT_PROFILE_POS=P` / `GLM_PROMPT_PROFILE_ROWS=M` profile a late prompt chunk with the class split separating attention math from projections (measured: 28.6% of an 8192-row chunk at position ~114k is attention math). `GLM_MOE_OVERLAP=1` dispatches the decode round's encoder `.concurrent` (falsified on AGX G17X: Metal reorders dependent kernels, halving round time but changing replies; default serial).
+- `zig/scripts/b4-window.sh` restores the resident serve through an EXIT trap registered before any fallible step.
 
 ## 1.0.12
 
