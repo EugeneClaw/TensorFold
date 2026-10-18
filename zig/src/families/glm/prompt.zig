@@ -254,20 +254,53 @@ fn moe(p: *const Prompt, x: *const fwd.Ctx, e: mtl.ComputeEncoder, w: *const wts
     const s = x.skip; // classes a profile leaves out
     const Class = fwd.Class;
     if (ep) |t| {
-        if (s & Class.exchange == 0) t.begin();
-    } else if (s & Class.shared == 0) shared(p, x, e, w, x_in, M);
-    if (s & Class.route == 0) route(p, x, e, w, x_in, M);
-    if (ep) |t| {
-        if (s & Class.routed == 0) { // down's fp32 partials put back in (row, slot) order for the decode's combine
-            gateUp(p, p.mm.mm_bf16, x, e, w, x_in, M, n);
-            affine_mm.gatherTo(e, p.mm.mm_f32, p.act, p.sums, w.down, p.offsets, p.yf, p.order, n, E);
+        {
+            var g = fwd.SpanGuard.begin(x, &e, .exchange);
+            defer g.end(x, &e);
+            if (s & Class.exchange == 0) t.begin();
         }
-        if (s & Class.exchange == 0) t.sendRows(e, p.yf, p.wts, M);
-        if (s & Class.shared == 0) shared(p, x, e, w, x_in, M);
-        if (s & Class.combine == 0) t.receiveRows(e, p.ys, out, M);
+    } else {
+        {
+            var g = fwd.SpanGuard.begin(x, &e, .shared);
+            defer g.end(x, &e);
+            if (s & Class.shared == 0) shared(p, x, e, w, x_in, M);
+        }
+    }
+    {
+        var g = fwd.SpanGuard.begin(x, &e, .route);
+        defer g.end(x, &e);
+        if (s & Class.route == 0) route(p, x, e, w, x_in, M);
+    }
+    if (ep) |t| {
+        {
+            var g = fwd.SpanGuard.begin(x, &e, .routed);
+            defer g.end(x, &e);
+            if (s & Class.routed == 0) { // down's fp32 partials put back in (row, slot) order for the decode's combine
+                gateUp(p, p.mm.mm_bf16, x, e, w, x_in, M, n);
+                affine_mm.gatherTo(e, p.mm.mm_f32, p.act, p.sums, w.down, p.offsets, p.yf, p.order, n, E);
+            }
+        }
+        {
+            var g = fwd.SpanGuard.begin(x, &e, .exchange);
+            defer g.end(x, &e);
+            if (s & Class.exchange == 0) t.sendRows(e, p.yf, p.wts, M);
+        }
+        {
+            var g = fwd.SpanGuard.begin(x, &e, .shared);
+            defer g.end(x, &e);
+            if (s & Class.shared == 0) shared(p, x, e, w, x_in, M);
+        }
+        {
+            var g = fwd.SpanGuard.begin(x, &e, .combine);
+            defer g.end(x, &e);
+            if (s & Class.combine == 0) t.receiveRows(e, p.ys, out, M);
+        }
         return;
     }
     const path = wide.routed(w.gate, w.up, w.down);
+    {
+        var gsp = fwd.SpanGuard.begin(x, &e, .routed);
+        defer gsp.end(x, &e);
     if (s & Class.routed == 0 and path == .rows) { // each expert's sorted pairs at its width
         wide.bySorted(
             &p.mm.wide.?,
@@ -292,20 +325,25 @@ fn moe(p: *const Prompt, x: *const fwd.Ctx, e: mtl.ComputeEncoder, w: *const wts
             n,
         );
     } else if (s & Class.routed == 0 and path == .gather) {
-        const g = wide.gather;
-        g.encode(e, p.mm.wide.?.gather[0], w.gate, w.up, .{ .x = x_in, .offsets = p.offsets, .order = p.order, .out = p.act }, n, E, c.topk, c.moe_inter, c.swiglu_limit);
-        g.encode(e, p.mm.wide.?.gather[1], w.down, null, .{ .x = p.act, .offsets = p.offsets, .order = p.order, .out = p.yp }, n, E, 1, D, 0);
+        const gg = wide.gather;
+        gg.encode(e, p.mm.wide.?.gather[0], w.gate, w.up, .{ .x = x_in, .offsets = p.offsets, .order = p.order, .out = p.act }, n, E, c.topk, c.moe_inter, c.swiglu_limit);
+        gg.encode(e, p.mm.wide.?.gather[1], w.down, null, .{ .x = p.act, .offsets = p.offsets, .order = p.order, .out = p.yp }, n, E, 1, D, 0);
     } else if (s & Class.routed == 0) { // down's rows put back in (row, slot) order for the combine
         const mm = if (path == .mm4) p.mm.mm_bf16 else p.mm.wide.?.mm2;
         gateUp(p, mm, x, e, w, x_in, M, n);
         affine_mm.gatherTo(e, mm, p.act, p.sums, w.down, p.offsets, p.yp, p.order, n, E);
     }
-    if (s & Class.combine != 0) return;
-    e.setPipeline(k.moe_combine);
-    bind(e, 0, .{ p.ys, p.yp, p.wts });
-    fwd.shape(e, 3, .{ M, c.topk });
-    bind(e, 4, .{out});
-    e.dispatchThreads(size(M * D, 1, 1), size(256, 1, 1));
+    {
+        var gsp = fwd.SpanGuard.begin(x, &e, .combine);
+        defer gsp.end(x, &e);
+        if (s & Class.combine != 0) return;
+        e.setPipeline(k.moe_combine);
+        bind(e, 0, .{ p.ys, p.yp, p.wts });
+        fwd.shape(e, 3, .{ M, c.topk });
+        bind(e, 4, .{out});
+        e.dispatchThreads(size(M * D, 1, 1), size(256, 1, 1));
+    }
+    }
 }
 
 /// The route on M rows: the decode's router and top-k, pairs sorted by expert (`order`: each sorted pair's index).
@@ -430,35 +468,44 @@ fn selectKeys(p: *const Prompt, x: *const fwd.Ctx, e: mtl.ComputeEncoder, mi: us
 }
 
 /// MLA layer `mi` on M rows at pos..: tensor-unit projections, the decode cache writes, each row's key list in the sparse kernel.
-fn mla(p: *const Prompt, x: *const fwd.Ctx, e: mtl.ComputeEncoder, mi: usize, w: *const wts.Mla, x_in: Ref, M: u32, pos: u32) void {
+/// B4: `mode` lets the caller gate the half: `.full` runs all launches (the engine's normal path); `.proj` runs
+/// only the projection half (x_proj + q_norm + qr_proj + kv_b absorb/unabsorb + o_proj); `.attn` runs only the
+/// attention-math half (mla_cache + selectKeys + scores/softmax/values). Default-off; the engine path is `.full`.
+pub const MlaMode = enum { full, proj, attn };
+
+fn mla(p: *const Prompt, x: *const fwd.Ctx, e: mtl.ComputeEncoder, mi: usize, w: *const wts.Mla, x_in: Ref, M: u32, pos: u32, mode: MlaMode) void {
     const c = x.c;
     const XP: u32 = @intCast(std.mem.alignForward(usize, c.xProj(), 64));
     const width = c.keyWidth();
-    if (fwd.on(x, "mla_proj")) {
+    const run_proj = mode != .attn;
+    const run_attn = mode != .proj;
+    if (run_proj and fwd.on(x, "mla_proj")) {
         qmm(p, e, x_in, w.x_proj, p.xp, M);
         fwd.rms(x, e, p.xp, w.q_norm, p.qr, M, c.q_lora, XP, c.q_lora, c.eps);
         qmm(p, e, p.qr, w.qr_proj, p.qp, M);
     }
-    if (fwd.on(x, "mla_cache")) fwd.mlaCache(x, e, mi, w, x_in, p.xp, XP, p.iw, M, pos);
-    if (fwd.on(x, "mla_absorb") and w.absorbed != null) {
-        wide.headsBatch(
-            &p.mm.wide.?,
-            e,
-            w.absorbed.?[0],
-            c.mla_heads,
-            .{ .in = p.qp, .ldx = c.qrProj(), .out = p.ql, .ldo = c.mla_heads * c.kv_lora, .rows = M },
-            c.nope,
-            p.sums,
-        ); // mlx-lm's embed_q
-    } else if (fwd.on(x, "mla_absorb")) {
-        e.setPipeline(if (c.tp > 1) x.k.absorb_nax_tp else x.k.absorb_nax); // the row kernel's qvm, weights in three bf16 parts
-        bind(e, 0, .{ w.kv_b.w, w.kv_b.s, w.kv_b.b, p.qp, p.ql });
-        e.setValue([2]i32{ @intCast(M), @intCast(c.qrProj()) }, 5);
-        e.dispatchGroups(size(c.kv_lora / 64, (M + 63) / 64, c.mla_heads), size(128, 1, 1));
+    if (run_attn and fwd.on(x, "mla_cache")) fwd.mlaCache(x, e, mi, w, x_in, p.xp, XP, p.iw, M, pos);
+    if (run_proj) {
+        if (fwd.on(x, "mla_absorb") and w.absorbed != null) {
+            wide.headsBatch(
+                &p.mm.wide.?,
+                e,
+                w.absorbed.?[0],
+                c.mla_heads,
+                .{ .in = p.qp, .ldx = c.qrProj(), .out = p.ql, .ldo = c.mla_heads * c.kv_lora, .rows = M },
+                c.nope,
+                p.sums,
+            ); // mlx-lm's embed_q
+        } else if (fwd.on(x, "mla_absorb")) {
+            e.setPipeline(if (c.tp > 1) x.k.absorb_nax_tp else x.k.absorb_nax); // the row kernel's qvm, weights in three bf16 parts
+            bind(e, 0, .{ w.kv_b.w, w.kv_b.s, w.kv_b.b, p.qp, p.ql });
+            e.setValue([2]i32{ @intCast(M), @intCast(c.qrProj()) }, 5);
+            e.dispatchGroups(size(c.kv_lora / 64, (M + 63) / 64, c.mla_heads), size(128, 1, 1));
+        }
     }
     var dense: u32 = 0;
     while (dense < M and pos + dense + 1 <= c.i_topk) dense += 1;
-    if (fwd.on(x, "mla_select")) {
+    if (run_attn and fwd.on(x, "mla_select")) {
         if (dense > 0) {
             e.setPipeline(x.k.dense_indices);
             bind(e, 0, .{p.indices});
@@ -471,7 +518,7 @@ fn mla(p: *const Prompt, x: *const fwd.Ctx, e: mtl.ComputeEncoder, mi: usize, w:
             selectKeys(p, x, e, mi, p.qp.at((@as(usize, r0) * c.qrProj() + c.mla_heads * c.nope) * 2), p.iw.at(@as(usize, r0) * c.i_heads * 2), p.indices.at(@as(usize, r0) * width * 4), sb, pos + r0);
         }
     }
-    if (fwd.on(x, "mla_attn")) {
+    if (run_attn and fwd.on(x, "mla_attn")) {
         if (p.sparse_nax) {
             e.setPipeline(if (c.tp > 1) x.k.sparse_nax_tp else x.k.sparse_nax);
             bind(e, 0, .{ p.ql, x.s.mla[mi].keys, p.indices });
@@ -481,21 +528,27 @@ fn mla(p: *const Prompt, x: *const fwd.Ctx, e: mtl.ComputeEncoder, mi: usize, w:
             e.dispatchGroups(size(c.mla_heads / 16, M, 1), size(128, 1, 1));
         } else fwd.attendIndexed(x, e, mi, p.ql, p.indices, p.att, M, pos + M);
     }
-    if (fwd.on(x, "mla_unabs")) unabsorb(p, x, e, w, M);
-    if (!fwd.on(x, "mla_out")) return;
-    if (c.tp == 1) return qmm(p, e, p.vals, w.o_proj, p.streams.branch, M);
-    qmmF32(p, e, p.vals, w.o_proj, p.part, M); // TP2: this Mac's heads' partial, summed with the peer's
-    x.ep.?.reduce(e, p.part, p.streams.branch, M);
+    if (run_proj and fwd.on(x, "mla_unabs")) unabsorb(p, x, e, w, M);
+    if (run_proj and fwd.on(x, "mla_out")) {
+        if (c.tp == 1) return qmm(p, e, p.vals, w.o_proj, p.streams.branch, M);
+        qmmF32(p, e, p.vals, w.o_proj, p.part, M); // TP2: this Mac's heads' partial, summed with the peer's
+        x.ep.?.reduce(e, p.part, p.streams.branch, M);
+    }
 }
 
 /// The backbone over a chunk (tokens in `ids`) at positions pos..: final-normed rows into `streams.hidden`.
-pub fn backbone(p: *const Prompt, x: *fwd.Ctx, e: mtl.ComputeEncoder, ids: Ref, M: u32, pos: u32) void {
+pub fn backbone(p: *const Prompt, x: *fwd.Ctx, e_in: mtl.ComputeEncoder, ids: Ref, M: u32, pos: u32) void {
+    var e = e_in;
     const c = x.c;
     const ss = &p.streams;
     std.debug.assert(x.sc == ss and M <= p.rows);
     const s = x.skip; // classes a profile leaves out
     const Class = fwd.Class;
-    if (s & Class.ends == 0) fwd.embed(x, e, ids, M, pos);
+    {
+        var g = fwd.SpanGuard.begin(x, &e, .ends);
+        defer g.end(x, &e);
+        if (s & Class.ends == 0) fwd.embed(x, e, ids, M, pos);
+    }
     const plane = @as(usize, M) * c.hidden * 2; // a trace's capture points: the decode backbone's
     fwd.snap(x, e, ss.h, plane);
     var pending = false;
@@ -504,54 +557,101 @@ pub fn backbone(p: *const Prompt, x: *fwd.Ctx, e: mtl.ComputeEncoder, ids: Ref, 
     for (0..c.run) |li| {
         const L = &x.w.layers[li];
         const hcs = L.hc.?;
-        if (s & Class.hc == 0) fwd.boundary(x, e, M, pending, hcs[0], L.in_norm);
+        {
+            var g = fwd.SpanGuard.begin(x, &e, .hc);
+            defer g.end(x, &e);
+            if (s & Class.hc == 0) fwd.boundary(x, e, M, pending, hcs[0], L.in_norm);
+        }
         fwd.snap(x, e, ss.normed, plane);
         switch (L.attn) {
             .kda => |*a| {
-                if (s & Class.kda == 0) {
-                    if (fwd.on(x, "kda_in")) qmm(p, e, ss.normed, a.in_proj, p.proj, M);
-                    kdaChunk(p, x, e, ki, a, M);
-                    if (c.tp > 1) { // TP2: this Mac's heads' out-projection partial, summed with the peer's
-                        qmmF32(p, e, p.y, a.o_proj, p.part, M);
-                        x.ep.?.reduce(e, p.part, ss.branch, M);
-                    } else if (fwd.on(x, "kda_out")) qmm(p, e, p.y, a.o_proj, ss.branch, M);
+                // B4 split: kda_proj covers in_proj + o_proj GEMMs; kda_attn covers the
+                // recurrence (kda_pre/kda_scan/kda_post). `kda` (meta) still skips the whole block.
+                const do_proj = s & Class.kda == 0 and s & Class.kda_proj == 0;
+                const do_attn = s & Class.kda == 0 and s & Class.kda_attn == 0;
+                {
+                    var g = fwd.SpanGuard.begin(x, &e, .kda);
+                    defer g.end(x, &e);
+                    if (do_proj or do_attn) {
+                        if (do_proj and fwd.on(x, "kda_in")) qmm(p, e, ss.normed, a.in_proj, p.proj, M);
+                        if (do_attn) kdaChunk(p, x, e, ki, a, M);
+                        if (do_proj) {
+                            if (c.tp > 1) { // TP2: this Mac's heads' out-projection partial, summed with the peer's
+                                qmmF32(p, e, p.y, a.o_proj, p.part, M);
+                                x.ep.?.reduce(e, p.part, ss.branch, M);
+                            } else if (fwd.on(x, "kda_out")) qmm(p, e, p.y, a.o_proj, ss.branch, M);
+                        }
+                    }
                 }
                 ki += 1;
             },
             .mla => |*a| {
-                if (s & Class.mla == 0) mla(p, x, e, mi, a, ss.normed, M, pos);
+                // B4 split: mla_proj covers x_proj/qr_proj/kv_b absorb+unabsorb/o_proj; mla_attn
+                // covers cache writes, key selection (selectKeys), scores/softmax/values. `mla`
+                // (meta) still skips the whole block. The SpanGuard wraps only the .full path
+                // because Kind enum has no .mla_proj/.mla_attn yet — the recorder is dead on
+                // this hardware (W2b falsified), so the wrap is a no-op anyway.
+                const do_proj = s & Class.mla == 0 and s & Class.mla_proj == 0;
+                const do_attn = s & Class.mla == 0 and s & Class.mla_attn == 0;
+                if (do_proj or do_attn) {
+                    const mode: MlaMode = if (do_proj and do_attn) .full else if (do_proj) .proj else .attn;
+                    if (mode == .full) {
+                        var g = fwd.SpanGuard.begin(x, &e, .mla);
+                        defer g.end(x, &e);
+                    }
+                    mla(p, x, e, mi, a, ss.normed, M, pos, mode);
+                }
                 mi += 1;
             },
         }
         fwd.snap(x, e, ss.branch, plane);
-        if (s & Class.hc == 0) fwd.boundary(x, e, M, true, hcs[1], L.post_norm);
+        {
+            var g = fwd.SpanGuard.begin(x, &e, .hc);
+            defer g.end(x, &e);
+            if (s & Class.hc == 0) fwd.boundary(x, e, M, true, hcs[1], L.post_norm);
+        }
         fwd.snap(x, e, ss.normed, plane);
         switch (L.mlp) {
-            .dense => |*d| if (s & Class.dense == 0) {
-                qmm(p, e, ss.normed, d.gate_up, p.gu, M);
-                swiglu(x, e, p.gu, p.actd, M, c.dense_inter);
-                if (c.tp > 1) { // TP2: this Mac's half, summed with the peer's
-                    qmmF32(p, e, p.actd, d.down, p.part, M);
-                    x.ep.?.reduce(e, p.part, ss.branch, M);
-                } else qmm(p, e, p.actd, d.down, ss.branch, M);
+            .dense => |*d| {
+                var g = fwd.SpanGuard.begin(x, &e, .dense);
+                defer g.end(x, &e);
+                if (s & Class.dense == 0) {
+                    qmm(p, e, ss.normed, d.gate_up, p.gu, M);
+                    swiglu(x, e, p.gu, p.actd, M, c.dense_inter);
+                    if (c.tp > 1) { // TP2: this Mac's half, summed with the peer's
+                        qmmF32(p, e, p.actd, d.down, p.part, M);
+                        x.ep.?.reduce(e, p.part, ss.branch, M);
+                    } else qmm(p, e, p.actd, d.down, ss.branch, M);
+                }
             },
             .moe => |*m| moe(p, x, e, m, ss.normed, M, if (c.byRows()) x.ep else null),
         }
         fwd.snap(x, e, ss.branch, plane);
         pending = true;
     }
-    if (s & Class.hc == 0) fwd.boundary(x, e, M, true, null, null);
-    if (s & Class.ends != 0) return;
-    e.setPipeline(x.k.stream_mean);
-    bind(e, 0, .{ ss.x[x.xi], ss.raw });
-    e.setValue([2]u32{ c.hidden, M }, 2);
-    e.dispatchThreads(size(c.hidden, M, 1), size(256, 1, 1));
-    fwd.rms(x, e, ss.raw, x.w.norm, ss.hidden, M, c.hidden, c.hidden, c.hidden, c.eps);
+    {
+        var g = fwd.SpanGuard.begin(x, &e, .hc);
+        defer g.end(x, &e);
+        if (s & Class.hc == 0) fwd.boundary(x, e, M, true, null, null);
+    }
+    {
+        var g = fwd.SpanGuard.begin(x, &e, .ends);
+        defer g.end(x, &e);
+        if (s & Class.ends != 0) return;
+        e.setPipeline(x.k.stream_mean);
+        bind(e, 0, .{ ss.x[x.xi], ss.raw });
+        e.setValue([2]u32{ c.hidden, M }, 2);
+        e.dispatchThreads(size(c.hidden, M, 1), size(256, 1, 1));
+        fwd.rms(x, e, ss.raw, x.w.norm, ss.hidden, M, c.hidden, c.hidden, c.hidden, c.eps);
+    }
     fwd.snap(x, e, ss.hidden, plane);
 }
 
 /// The MTP head over M prompt rows (`h`, next tokens) at head positions pos..: their cache entries only (no one reads the block's output).
-pub fn mtp(p: *const Prompt, x: *const fwd.Ctx, e: mtl.ComputeEncoder, h: Ref, next: Ref, M: u32, pos: u32) void {
+pub fn mtp(p: *const Prompt, x: *const fwd.Ctx, e_in: mtl.ComputeEncoder, h: Ref, next: Ref, M: u32, pos: u32) void {
+    var e = e_in;
+    var g = fwd.SpanGuard.begin(x, &e, .mtp);
+    defer g.end(x, &e);
     const c = x.c;
     const D = c.hidden;
     const L = &x.w.layers[c.layers];
@@ -560,7 +660,7 @@ pub fn mtp(p: *const Prompt, x: *const fwd.Ctx, e: mtl.ComputeEncoder, h: Ref, n
     fwd.inject(x, e, p.m_emb, M, pos + 1); // the head reads each row's next token: an image's rows one place on
     fwd.rms(x, e, p.m_emb, m.enorm, p.m_eh, M, D, D, 2 * D, c.eps);
     fwd.rms(x, e, h, m.hnorm, p.m_eh.at(@as(usize, D) * 2), M, D, D, 2 * D, c.eps);
-    if (m.eh_bf16) |eh| wide.bf16(&p.mm.wide.?, e, eh, D, 2 * D, .{ .in = p.m_eh, .ldx = 2 * D, .out = p.m_x, .ldo = D, .rows = M }) else qmm(p, e, p.m_eh, m.eh_proj, p.m_x, M);
+    if (m.eh_bf16) |eh| wide.bf16Nax(&p.mm.wide.?, e, eh, D, 2 * D, .{ .in = p.m_eh, .ldx = 2 * D, .out = p.m_x, .ldo = D, .rows = M }) else qmm(p, e, p.m_eh, m.eh_proj, p.m_x, M);
     fwd.rms(x, e, p.m_x, L.in_norm, p.m_xn, M, D, D, D, c.eps);
     qmm(p, e, p.m_xn, L.attn.mla.x_proj, p.xp, M);
     fwd.mlaCache(x, e, c.countKind(.mla), &L.attn.mla, p.m_xn, p.xp, @intCast(std.mem.alignForward(usize, c.xProj(), 64)), p.iw, M, pos);

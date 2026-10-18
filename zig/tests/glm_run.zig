@@ -14,10 +14,14 @@ const usage =
     \\GLM_EP (expert parallel: this Mac's link settings; run the same command on both Macs),
     \\GLM_TRACE=NAME:STEPS:PATH (every call of NAME's plain reply, sublayer by sublayer, feeding its expected tokens),
     \\GLM_FORCED (each prompt's teacher-forced agreement with its expected tokens, before the replies),
+    \\--draft-depth N (B3: override the depths list with a single value; honors GLM_DRAFT_DEPTH too),
+    \\--adaptive (B3: rolling accept rate drops d3->d2 and restores on recovery; honors GLM_ADAPTIVE_DEPTH=1),
     \\GLM_PROFILE=D,D (after the replies: a knock-out profile of a round at each depth, GLM_PROFILE_REPS times; GLM_PROFILE_ROWS=N: N rows at depth 0),
     \\GLM_LOGITS=PREFIX (write each prompt's last-row logits, bf16, to PREFIX.NAME.bf16 at its first depth's first run),
     \\GLM_LOGITS_VS=PREFIX (compare them with such a file: the largest difference against the bf16 step at the top logit),
     \\GLM_PROMPT_PROFILE=REPS (after the replies: each prompt's first chunk by class, each left out or alone),
+    \\GLM_PROMPT_PROFILE_POS=POS (B4: also profile the chunk at position POS, where the late-context cache shape is non-trivial; default 0 = first chunk),
+    \\GLM_PROMPT_PROFILE_ROWS=M (B4: override chunk rows for the late profile; default 0 = engine's chunk_rows),
     \\GLM_MARGINS=PREFIX (each emitted token's top-two logit margin, f32, to PREFIX.NAME.margins), GLM_MARGINS_VS=PREFIX
     \\(at the first token that differs from GLM_VS's reply, both runs' margins there),
     \\GLM_TRACE_LAST=PREFIX (each prompt's last row at every capture point, bf16, to PREFIX.NAME.trace: embedding, then
@@ -120,12 +124,38 @@ pub fn main(init: std.process.Init) !void {
     const max = try std.fmt.parseInt(usize, env("GLM_MAX", "64"), 10);
     const cap = try std.fmt.parseInt(u32, env("GLM_CAP", "8192"), 10);
     const runs = try std.fmt.parseInt(usize, env("GLM_RUNS", "1"), 10);
+    // B3: parse --draft-depth N (overrides GLM_DEPTHS to a single value) and --adaptive (rolling accept rate control).
+    var cli_draft_depth: u32 = 0; // 0 = no override (use GLM_DEPTHS)
+    var cli_adaptive: bool = false;
+    {
+        var ai: usize = 3;
+        while (ai < args.len) : (ai += 1) {
+            if (std.mem.eql(u8, args[ai], "--draft-depth")) {
+                if (ai + 1 >= args.len) {
+                    std.debug.print("--draft-depth needs a numeric value\n", .{});
+                    std.process.exit(2);
+                }
+                cli_draft_depth = std.fmt.parseInt(u32, args[ai + 1], 10) catch 0;
+                ai += 1;
+            } else if (std.mem.eql(u8, args[ai], "--adaptive")) {
+                cli_adaptive = true;
+            }
+        }
+    }
     var depths: std.ArrayList(usize) = .empty;
-    var it = std.mem.tokenizeScalar(u8, env("GLM_DEPTHS", "0,3"), ',');
-    while (it.next()) |d| try depths.append(arena, try std.fmt.parseInt(usize, d, 10));
+    if (cli_draft_depth > 0) {
+        // Single-depth mode: iterate that depth only, regardless of GLM_DEPTHS.
+        try depths.append(arena, cli_draft_depth);
+    } else {
+        var it = std.mem.tokenizeScalar(u8, env("GLM_DEPTHS", "0,3"), ',');
+        while (it.next()) |d| try depths.append(arena, try std.fmt.parseInt(usize, d, 10));
+    }
     const pf = try mtl.MappedFile.open(try std.fmt.allocPrintSentinel(arena, "{s}", .{args[2]}, 0));
     const doc = try std.json.parseFromSliceLeaky(std.json.Value, arena, pf.bytes[0..pf.size], .{});
     const e = try glm.engine.Engine.load(gpa, args[1], cap);
+    // Apply env-var and CLI flags to the engine after load (load() reads GLM_DRAFT_DEPTH / GLM_ADAPTIVE_DEPTH).
+    if (cli_draft_depth > 0) e.draft_depth = cli_draft_depth;
+    if (cli_adaptive) e.adaptive_depth = true;
     defer e.deinit();
     std.debug.print("loaded in {d:.1} s: {d} of {d} layers, routed experts {d}-{d}, {d:.1} GB of weights, MTP head {s}, {d:.2} GB of caches and buffers, prompt chunks of {d} rows\n", .{ e.load_seconds, e.c.run, e.c.layers, e.c.own[0], e.c.own[1] - 1, @as(f64, @floatFromInt(e.w.bytes)) / 1e9, if (e.hasMtp()) "yes" else "no", @as(f64, @floatFromInt(e.arena.bytes)) / 1e9, if (e.pr) |p| p.rows else 0 });
     const strict = platform.c.getenv("GLM_REF_STRICT") != null;
@@ -191,7 +221,16 @@ pub fn main(init: std.process.Init) !void {
                     for (r.draft_ranks, 0..) |row, m| if (row[0] + row[1] + row[2] + row[3] > 0) std.debug.print(" m{d} {d}/{d}/{d}/{d}", .{ m, row[0], row[1], row[2], row[3] });
                     std.debug.print("\n", .{});
                 }
+                // B3: print the adaptive-depth switch log + summary line.
+                if (e.adaptive_depth) {
+                    std.debug.print("  B3 adaptive: {d} switches, final depth d{d}, avg accept {d:.3} over {d} non-copy drafts\n", .{ r.adaptive_switches, r.adaptive_final_depth, r.adaptive_avg_accept, r.drafted -| r.copy_accepted });
+                    if (r.adaptive_log) |log| {
+                        std.debug.print("{s}", .{log});
+                    }
+                }
             }
+            // The engine owns this slice; free it once printed (or even when null — gpa.free handles null).
+            if (r.adaptive_log) |log_ptr| gpa.free(log_ptr);
             if (plain == null) plain = try arena.dupe(u32, toks) else if (firstDiff(plain.?, toks)) |at| {
                 failures += 1;
                 std.debug.print("  DIFFERS from depth {d} at token {d}\n", .{ depths.items[0], at });
@@ -265,9 +304,13 @@ pub fn main(init: std.process.Init) !void {
         while (pit.next()) |dv| try e.profile(try std.fmt.parseInt(u32, dv, 10), reps, only, parts);
     }
     if (platform.c.getenv("GLM_MM_CHECK") != null) try e.checkMatmul(try ints(arena, doc.object.get("prompts").?.array.items[0].object.get("ids").?));
-    if (platform.c.getenv("GLM_PROMPT_PROFILE")) |v| { // each prompt's first chunk by class (GLM_PROFILE_ONLY: each alone)
+    if (platform.c.getenv("GLM_PROMPT_PROFILE")) |v| { // each prompt's chunk by class (GLM_PROFILE_ONLY: each alone; GLM_PROMPT_PROFILE_POS: profile a LATE chunk)
         const reps = try std.fmt.parseInt(usize, std.mem.span(v), 10);
-        for (doc.object.get("prompts").?.array.items) |p| try e.profilePrompt(try ints(arena, p.object.get("ids").?), reps, platform.c.getenv("GLM_PROFILE_ONLY") != null, platform.c.getenv("GLM_PROFILE_PARTS") != null);
+        const pos_str = env("GLM_PROMPT_PROFILE_POS", "0");
+        const pos = try std.fmt.parseInt(u32, pos_str, 10);
+        const rows_str = env("GLM_PROMPT_PROFILE_ROWS", "0"); // 0 = engine's chunk_rows
+        const rows = try std.fmt.parseInt(u32, rows_str, 10);
+        for (doc.object.get("prompts").?.array.items) |p| try e.profilePromptAt(try ints(arena, p.object.get("ids").?), reps, platform.c.getenv("GLM_PROFILE_ONLY") != null, platform.c.getenv("GLM_PROFILE_PARTS") != null, pos, rows);
     }
     try saved.append(arena, '}');
     if (platform.c.getenv("GLM_OUT")) |path| {

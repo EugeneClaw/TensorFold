@@ -40,8 +40,13 @@ fn headsMm(e: mtl.ComputeEncoder, i: usize, mm: tf.affine_mm.Pipes, pool: Pool, 
     });
 }
 fn ehRows(e: mtl.ComputeEncoder, i: usize, p: *const wide.Pipes, eh: mtl.Buffer, io: Io) void {
-    _ = i;
-    wide.bf16(p, e, .{ .buf = eh }, D, 2 * D, .{ .in = rf(io.x), .ldx = 2 * D, .out = rf(io.y), .ldo = D, .rows = PM });
+  _ = i;
+  wide.bf16(p, e, .{ .buf = eh }, D, 2 * D, .{ .in = rf(io.x), .ldx = 2 * D, .out = rf(io.y), .ldo = D, .rows = PM });
+}
+// Tensor-core (BM=8 BN=64, 8x8 simdgroup MMA in fp32) — prompt-side eh_proj replacement (wide.bf16Nax).
+fn ehRowsNax(e: mtl.ComputeEncoder, i: usize, p: *const wide.Pipes, eh: mtl.Buffer, io: Io) void {
+  _ = i;
+  wide.bf16Nax(p, e, .{ .buf = eh }, D, 2 * D, .{ .in = rf(io.x), .ldx = 2 * D, .out = rf(io.y), .ldo = D, .rows = PM });
 }
 
 /// A chunk's dense product: row kernels, or affine_mm (`mm`).
@@ -76,9 +81,11 @@ pub fn prompt(b: *Bench, k: *const kernels.Kernels, p: *const wide.Pipes) !void 
         const eh = try buf(b.device, D * 2 * D * 2);
         defer eh.deinit();
         @memset(eh.slice(u16, 2 * D * D), 0x3c00);
+        const tRows = try b.time(ehRows, .{ p, eh, b.io }) / 1e3;
+        const tNax = try b.time(ehRowsNax, .{ p, eh, b.io }) / 1e3;
         std.debug.print(
-            "  eh_proj bf16 [4096, 8192] rows {d:8.2}  (x1 a chunk with MTP)\n",
-            .{try b.time(ehRows, .{ p, eh, b.io }) / 1e3},
+            "  eh_proj bf16 [4096, 8192] rows {d:8.2} (scalar)  nax {d:8.2} (tensor-units)  (x1 a chunk with MTP)\n",
+            .{ tRows, tNax },
         );
     }
     for ([_][3]usize{ .{ PS, D, 9 }, .{ D, W, 10 }, .{ 1536, D, 1 } }) |s| {

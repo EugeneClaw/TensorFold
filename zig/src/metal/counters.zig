@@ -83,6 +83,8 @@ pub const SampleBuffer = struct {
     count: usize,
 
     /// Shared opaque samples support CPU resolution after command completion, including stage-only devices.
+    /// GLM_COUNTER_STORAGE=private picks MTLStorageModePrivate (2): on some OS builds the shared-mode
+    /// mapping is what poisons a loaded engine process (first setPipelineState after allocation SIGSEGVs).
     pub fn init(dev: device.Device, count: usize) !SampleBuffer {
         if (count == 0 or count > max_samples) return error.InvalidSampleCount;
         const capability = query(dev);
@@ -92,7 +94,11 @@ pub const SampleBuffer = struct {
         const desc = objc.msg(?objc.Id, allocated, "init", .{}) orelse return error.CounterSampleBufferCreationFailed;
         defer objc.release(desc);
         objc.msg(void, desc, "setCounterSet:", .{timestampSet(dev).?});
-        objc.msg(void, desc, "setStorageMode:", .{@as(usize, 0)});
+        const storage: usize = if (std.c.getenv("GLM_COUNTER_STORAGE")) |v|
+            (if (v[0] == 'p') 2 else 0)
+        else
+            0;
+        objc.msg(void, desc, "setStorageMode:", .{storage});
         objc.msg(void, desc, "setSampleCount:", .{count});
         var err: ?objc.Id = null;
         const id = objc.msg(?objc.Id, dev.id, "newCounterSampleBufferWithDescriptor:error:", .{ desc, &err }) orelse {

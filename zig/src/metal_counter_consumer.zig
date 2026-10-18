@@ -68,8 +68,8 @@ pub const Consumer = struct {
         const gate_value = self.next_gate;
         self.next_gate += 1;
         cb.waitFor(self.gate, gate_value);
+        var encoder = cb.compute(.serial); // the engine's order: the encoder is open when the recorder binds
         try recorder.beginCommand(cb);
-        var encoder = cb.compute(.serial);
         var submitted = false;
         errdefer {
             if (submitted) {
@@ -124,7 +124,12 @@ pub const Consumer = struct {
         try self.execute(&plain);
         var expected_bits: [element_count]u32 = undefined;
         for (self.b.slice(f32, element_count), &expected_bits) |value, *bits| bits.* = @bitCast(value);
-        var instrumented = try counters.Recorder.init(allocator, self.device, .{ .enabled = true, .max_spans = 3 });
+        // GLM_COUNTER_MAX_SPANS: exercise a different buffer capacity (the engine's census uses 2048).
+        const max_spans: usize = if (std.c.getenv("GLM_COUNTER_MAX_SPANS")) |v|
+            std.fmt.parseInt(usize, std.mem.span(v), 10) catch 3
+        else
+            3;
+        var instrumented = try counters.Recorder.init(allocator, self.device, .{ .enabled = true, .max_spans = max_spans });
         defer instrumented.deinit() catch unreachable;
         try self.execute(&instrumented);
         for (self.b.slice(f32, element_count), expected_bits) |value, bits| {
@@ -170,6 +175,134 @@ fn supportedDevice() !mtl.Device {
         return error.SkipZigTest;
     }
     return device;
+}
+
+// The engine's GLM_COUNTER_SPANS crash repro, isolated. The engine allocates the counter
+// sample buffer mid-load, then k.widen creates the wide pipelines (tf_embed_b8_g64) AFTER it;
+// the first setPipeline on such a pipeline SIGSEGVs inside AGX setComputePipelineState.
+// GLM_REPRO_CASE: a = pipeline first, engine span order (sample then bind);
+// b = pipeline bound before the sample; c = a tiny pipeline bound, then sample, then embed;
+// d = the engine's allocation order: the 4096-sample buffer exists BEFORE the embed pipeline is created.
+test "dispatch counter sample around the generated embed pipeline binds or crashes reproducibly" {
+    const case = blk: {
+        const v = std.c.getenv("GLM_REPRO_CASE") orelse break :blk 'a';
+        break :blk v[0];
+    };
+    const pool = mtl.objc.Pool.push();
+    defer pool.pop();
+    const device = try supportedDevice();
+    defer device.deinit();
+    const sources = @import("kernel_sources");
+    // Case e: the engine compiles ~24 libraries on WORKER THREADS (kernels.load's Jobs) before the
+    // recorder exists; case f allocates hundreds of MTLBuffers first (wts.load's shape).
+    if (case == 'e') {
+        const Worker = struct {
+            device: mtl.Device,
+            entries: []const sources.glm.Kernel,
+            fn run(self: *@This()) void {
+                const wpool = mtl.objc.Pool.push();
+                defer wpool.pop();
+                for (self.entries) |entry| {
+                    const lib = mtl.Library.fromSource(self.device, entry.source, mtl.CompileOptions.mlx()) catch return;
+                    defer lib.deinit();
+                    for (entry.functions) |fname| {
+                        const p = mtl.Pipeline.init(self.device, lib, fname, false) catch return;
+                        p.deinit();
+                    }
+                }
+            }
+        };
+        var workers: [8]Worker = undefined;
+        for (&workers, 0..) |*w, wi| w.* = .{ .device = .{ .id = mtl.objc.retain(device.id) }, .entries = sources.glm.all[wi * 4 ..][0..4] };
+        var threads: [8]std.Thread = undefined;
+        for (&threads, &workers) |*t, *w| t.* = std.Thread.spawn(.{}, Worker.run, .{w}) catch unreachable;
+        for (&threads) |*t| t.join();
+        for (&workers) |*w| mtl.objc.release(w.device.id);
+        std.debug.print("case e: 8 worker threads compiled {} libraries and their pipelines\n", .{workers.len * 4});
+    }
+    if (case == 'f') {
+        var big: [64]mtl.Buffer = undefined;
+        for (&big) |*b| b.* = try device.buffer(8 << 20, mtl.ResourceOptions.shared);
+        defer for (&big) |*b| b.deinit();
+        std.debug.print("case f: 64 x 8 MB MTLBuffers allocated\n", .{});
+    }
+    if (case == 'g') {
+        // The engine keeps every pipeline it ever created alive (~thousands); case e destroyed
+        // its worker pipelines. Keep a realistic population alive across the sample buffer.
+        var alive = try std.ArrayList(mtl.Pipeline).initCapacity(std.testing.allocator, 512);
+        defer {
+            for (alive.items) |p| p.deinit();
+            alive.deinit(std.testing.allocator);
+        }
+        for (0..2) |pass| {
+            for (sources.glm.all) |entry| {
+                const lib = mtl.Library.fromSource(device, entry.source, mtl.CompileOptions.mlx()) catch continue;
+                defer lib.deinit();
+                for (entry.functions) |fname| {
+                    const p = mtl.Pipeline.init(device, lib, fname, false) catch continue;
+                    try alive.append(std.testing.allocator, p);
+                }
+            }
+            _ = pass;
+        }
+        std.debug.print("case g: {d} pipelines kept alive\n", .{alive.items.len});
+    }
+    // Case d mirrors the engine: the recorder's sample buffer is allocated before the wide pipelines.
+    var late_recorder: ?counters.Recorder = null;
+    defer if (late_recorder) |*r| r.deinit() catch unreachable;
+    if (case == 'd' or case == 'e' or case == 'f' or case == 'g') {
+        late_recorder = try counters.Recorder.init(std.testing.allocator, device, .{ .enabled = true, .max_spans = 2048 });
+        std.debug.print("case {c}: 4096-sample buffer allocated\n", .{case});
+    }
+    const library = try mtl.Library.fromSource(device, sources.ops_embed_norm, mtl.CompileOptions.mlx());
+    defer library.deinit();
+    const embed = try mtl.Pipeline.init(device, library, "tf_embed_b8_g64", false);
+    defer embed.deinit();
+    std.debug.print("repro case {c}: embed pipeline created\n", .{case});
+    const queue = try device.queue();
+    defer queue.deinit();
+    var recorder = if (late_recorder) |*r| r.* else try counters.Recorder.init(std.testing.allocator, device, .{ .enabled = true, .max_spans = 1 });
+    defer if (late_recorder == null) recorder.deinit() catch unreachable;
+    const cb = queue.commandBuffer();
+    try recorder.beginCommand(cb);
+    var encoder = cb.compute(.serial);
+    std.debug.print("repro case {c}: beginCommand ok\n", .{case});
+    switch (case) {
+        'd', 'e', 'f', 'g' => {
+            std.debug.print("case {c}: no span; about to setPipeline with the sample buffer present\n", .{case});
+        },
+        'b' => {
+            encoder.setPipeline(embed);
+            std.debug.print("case b: embed pipeline bound before sample\n", .{});
+            try recorder.beginSpan(&encoder, .dense);
+        },
+        'c' => {
+            const tiny_library = try mtl.Library.fromSource(device, source, mtl.CompileOptions.mlx());
+            defer tiny_library.deinit();
+            const tiny = try mtl.Pipeline.init(device, tiny_library, "tf_counter_affine", false);
+            defer tiny.deinit();
+            encoder.setPipeline(tiny);
+            std.debug.print("case c: tiny pipeline bound before sample\n", .{});
+            try recorder.beginSpan(&encoder, .dense);
+        },
+        else => {
+            try recorder.beginSpan(&encoder, .dense);
+            std.debug.print("case a: sample taken with no pipeline bound\n", .{});
+        },
+    }
+    std.debug.print("repro case {c}: about to setPipeline(embed)\n", .{case});
+    encoder.setPipeline(embed);
+    std.debug.print("repro case {c}: setPipeline(embed) SURVIVED\n", .{case});
+    const spanless = case == 'd' or case == 'e' or case == 'f' or case == 'g';
+    if (!spanless) try recorder.endSpan(&encoder);
+    try recorder.finishEncoding(&encoder);
+    cb.commit();
+    cb.wait();
+    if (cb.failure() != null) return error.CounterConsumerGpuFailure;
+    if (!spanless) {
+        const spans = try recorder.readAfterCompletion();
+        if (spans.len != 1) return error.CounterConsumerSpanCountMismatch;
+    }
 }
 
 test "sampled dependent direct and indirect operators preserve FP32 bits and repeat without stale samples" {

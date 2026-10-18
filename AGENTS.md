@@ -1,0 +1,1 @@
+/Users/eugine/.zenith/projects/20261016T205128Z-tf-speed-mission-user-approved-2026-10-16-22-00-bst-overnight-mo/.zenith/AGENTS.md

@@ -1,4 +1,4 @@
-//! Same-command-buffer GPU timestamps, bounded resources and no per-span CPU waits.
+/// Same-command-buffer GPU timestamps, bounded resources and no per-span CPU waits.
 const std = @import("std");
 const mtl = @import("metal");
 const counters = mtl.counters;
@@ -7,14 +7,23 @@ pub const Class = @import("gpu_profile.zig").Class;
 pub const class_count = @typeInfo(Class).@"enum".field_names.len;
 pub const max_span_capacity: usize = 65536;
 pub const Options = struct { enabled: bool = false, max_spans: usize = 512 };
-pub const Span = struct {
-    kind: Class = .dense,
-    begin_timestamp: u64 = 0,
-    end_timestamp: u64 = 0,
-    gpu_seconds: f64 = 0,
-};
 pub const Aggregate = struct { calls: u64 = 0, gpu_seconds: f64 = 0 };
+
+/// The default-typed Span (legacy callers): a record tagged by the general-purpose Class enum.
+/// Alias, not a twin struct: `Recorder.readAfterCompletion()` yields `SpanT(Class)` values, and
+/// distinct struct types would not coerce (the counter consumer's report copies them by element).
+pub const Span = SpanT(Class);
 const State = enum { idle, recording, resolved, read, broken };
+
+/// A per-class Span template: parameterized so a family can tag spans by its own enum (forward.zig's 12+1 classes).
+pub fn SpanT(comptime C: type) type {
+    return struct {
+        kind: C,
+        begin_timestamp: u64 = 0,
+        end_timestamp: u64 = 0,
+        gpu_seconds: f64 = 0,
+    };
+}
 
 /// Two reference samples convert GPU ticks to nanoseconds; never use CPU span time.
 pub const Calibration = struct {
@@ -65,213 +74,227 @@ const Resources = struct {
     }
 };
 
-pub const Recorder = struct {
-    allocator: std.mem.Allocator,
-    resources: ?Resources = null,
-    hardware: counters.Capability = .{},
-    spans: []Span = &.{},
-    span_count: usize = 0,
-    active_span: ?usize = null,
-    command_buffer: ?mtl.CommandBuffer = null,
-    encoder_open: bool = false,
-    state: State = .idle,
-    clock_before: counters.ClockSample = .{},
-    calibration: ?Calibration = null,
-    totals: [class_count]Aggregate = @splat(.{}),
+pub const Recorder = RecorderT(Class);
 
-    /// Init-only bounded storage; disabled init allocates nothing.
-    pub fn init(allocator: std.mem.Allocator, device: mtl.Device, options: Options) !Recorder {
-        var self = Recorder{ .allocator = allocator };
-        if (!options.enabled) return self;
-        if (options.max_spans == 0 or options.max_spans > max_span_capacity) return error.InvalidSpanCapacity;
-        self.hardware = counters.query(device);
-        const mode = self.hardware.mode();
-        if (mode == .unsupported) return error.UnsupportedGpuCounters;
-        self.spans = try allocator.alloc(Span, options.max_spans);
-        errdefer allocator.free(self.spans);
-        self.resources = try Resources.init(device, mode, options.max_spans * 2);
-        return self;
-    }
+/// A family-scoped Recorder template: parameterized so callers (e.g. GLM forward) tag spans by their own Class enum.
+pub fn RecorderT(comptime C: type) type {
+    return struct {
+        const Self = @This();
+        const class_n = @typeInfo(C).@"enum".field_names.len;
+        const SpanT_ = SpanT(C);
 
-    pub fn enabled(self: *const Recorder) bool {
-        return self.resources != null;
-    }
+        allocator: std.mem.Allocator,
+        resources: ?Resources = null,
+        hardware: counters.Capability = .{},
+        spans: []SpanT_ = &.{},
+        span_count: usize = 0,
+        active_span: ?usize = null,
+        command_buffer: ?mtl.CommandBuffer = null,
+        encoder_open: bool = false,
+        state: State = .idle,
+        clock_before: counters.ClockSample = .{},
+        calibration: ?Calibration = null,
+        totals: [class_n]Aggregate = @splat(.{}),
+        /// Diagnostic bisect switch (GLM_COUNTER_SPAN_SITES=0): bind and read per command buffer
+        /// without opening any span, so a crash's ownership splits between the bind/read path and the wrap sites.
+        sites: bool = true,
 
-    /// For disabled Recorders this is intentionally unqueried; use metal.counters.query(device) to inspect hardware.
-    pub fn capability(self: *const Recorder) counters.Capability {
-        return self.hardware;
-    }
-
-    /// Bind the caller's uncommitted command buffer with an open compute encoder; do not commit inside this API.
-    pub fn beginCommand(self: *Recorder, cb: mtl.CommandBuffer) !void {
-        if (!self.enabled()) {
-            self.encoder_open = true;
-            return;
+        /// Init-only bounded storage; disabled init allocates nothing.
+        pub fn init(allocator: std.mem.Allocator, device: mtl.Device, options: Options) !Self {
+            var self = Self{ .allocator = allocator };
+            if (!options.enabled) return self;
+            if (options.max_spans == 0 or options.max_spans > max_span_capacity) return error.InvalidSpanCapacity;
+            self.hardware = counters.query(device);
+            const mode = self.hardware.mode();
+            if (mode == .unsupported) return error.UnsupportedGpuCounters;
+            self.spans = try allocator.alloc(SpanT_, options.max_spans);
+            errdefer allocator.free(self.spans);
+            self.resources = try Resources.init(device, mode, options.max_spans * 2);
+            return self;
         }
-        if (self.state != .idle and self.state != .read) return error.CounterRecordingInFlight;
-        if (cb.status() != .not_enqueued) return error.CounterCommandAlreadySubmitted;
-        self.command_buffer = cb.retain();
-        self.clock_before = counters.sampleClocks(self.resources.?.device);
-        self.calibration = null;
-        self.span_count = 0;
-        self.active_span = null;
-        self.totals = @splat(.{});
-        self.encoder_open = true;
-        self.state = .recording;
-    }
 
-    /// Non-nested spans; stage mode rotates fenced encoders, requiring resource and pipeline rebinding.
-    pub fn beginSpan(self: *Recorder, encoder: *mtl.ComputeEncoder, kind: Class) !void {
-        if (!self.enabled()) return;
-        if (self.state != .recording or !self.encoder_open) return error.CounterNotRecording;
-        if (self.active_span != null) return error.NestedCounterSpan;
-        if (self.span_count == self.spans.len) return error.CounterSpanCapacityExceeded;
-        const resources = self.resources.?;
-        const index = self.span_count;
-        if (self.hardware.mode() == .dispatch) {
-            try resources.samples.sample(encoder.*, index * 2);
-        } else {
-            resources.fence.update(encoder.*);
-            encoder.end();
-            self.encoder_open = false;
-            encoder.* = resources.pass.?.compute(self.command_buffer.?, resources.samples, index * 2, index * 2 + 1) catch |err| {
-                self.state = .broken;
-                return err;
-            };
-            self.encoder_open = true;
-            resources.fence.waitCompute(encoder.*);
+        pub fn enabled(self: *const Self) bool {
+            return self.resources != null;
         }
-        self.spans[index] = .{ .kind = kind };
-        self.span_count += 1;
-        self.active_span = index;
-    }
 
-    /// On stage-only devices the returned uninstrumented encoder still waits for all writes of the previous span.
-    pub fn endSpan(self: *Recorder, encoder: *mtl.ComputeEncoder) !void {
-        if (!self.enabled()) return;
-        if (self.state != .recording or !self.encoder_open) return error.CounterNotRecording;
-        const index = self.active_span orelse return error.NoActiveCounterSpan;
-        const resources = self.resources.?;
-        if (self.hardware.mode() == .dispatch) {
-            try resources.samples.sample(encoder.*, index * 2 + 1);
-        } else {
-            resources.fence.update(encoder.*);
-            encoder.end();
-            self.encoder_open = false;
-            const cb = self.command_buffer.?;
-            const id = mtl.objc.msg(?mtl.objc.Id, cb.id, "computeCommandEncoderWithDispatchType:", .{
-                @backingInt(mtl.DispatchType.serial),
-            }) orelse {
-                self.state = .broken;
-                return error.CounterEncoderCreationFailed;
-            };
-            encoder.* = .{ .id = id };
-            self.encoder_open = true;
-            resources.fence.waitCompute(encoder.*);
+        /// For disabled Recorders this is intentionally unqueried; use metal.counters.query(device) to inspect hardware.
+        pub fn capability(self: *const Self) counters.Capability {
+            return self.hardware;
         }
-        self.active_span = null;
-    }
 
-    /// Ends the final encoder before the caller's existing commit/wait; resolution requires completion.
-    pub fn finishEncoding(self: *Recorder, encoder: *mtl.ComputeEncoder) !void {
-        if (!self.enabled()) {
-            encoder.end();
-            self.encoder_open = false;
-            return;
-        }
-        if (self.state != .recording or !self.encoder_open) return error.CounterNotRecording;
-        if (self.active_span != null) return error.UnclosedCounterSpan;
-        encoder.end();
-        self.encoder_open = false;
-        self.state = .resolved;
-    }
-
-    /// Cancels unsubmitted work, closing any surviving encoder, including after encoder creation failure.
-    pub fn cancelEncoding(self: *Recorder, encoder: *mtl.ComputeEncoder) !void {
-        if (self.command_buffer) |cb| {
+        /// Bind the caller's uncommitted command buffer with an open compute encoder; do not commit inside this API.
+        pub fn beginCommand(self: *Self, cb: mtl.CommandBuffer) !void {
+            if (!self.enabled()) {
+                self.encoder_open = true;
+                return;
+            }
+            if (self.state != .idle and self.state != .read) return error.CounterRecordingInFlight;
             if (cb.status() != .not_enqueued) return error.CounterCommandAlreadySubmitted;
+            // Hold the cb's underlying id via retain. The caller still owns the cb handle in Metal's autorelease pool,
+            // but Metal retains it on commit; we mirror with an explicit retain for balance.
+            self.command_buffer = cb.retain();
+            self.clock_before = counters.sampleClocks(self.resources.?.device);
+            self.calibration = null;
+            self.span_count = 0;
+            self.active_span = null;
+            self.totals = @splat(.{});
+            self.encoder_open = true;
+            self.state = .recording;
         }
-        if (self.encoder_open) {
+
+        /// Non-nested spans; stage mode rotates fenced encoders, requiring resource and pipeline rebinding.
+        pub fn beginSpan(self: *Self, encoder: *mtl.ComputeEncoder, kind: C) !void {
+            if (!self.enabled()) return;
+            if (self.state != .recording or !self.encoder_open) return error.CounterNotRecording;
+            if (self.active_span != null) return error.NestedCounterSpan;
+            if (self.span_count == self.spans.len) return error.CounterSpanCapacityExceeded;
+            const resources = self.resources.?;
+            const index = self.span_count;
+            if (self.hardware.mode() == .dispatch) {
+                try resources.samples.sample(encoder.*, index * 2);
+            } else {
+                resources.fence.update(encoder.*);
+                encoder.end();
+                self.encoder_open = false;
+                encoder.* = resources.pass.?.compute(self.command_buffer.?, resources.samples, index * 2, index * 2 + 1) catch |err| {
+                    self.state = .broken;
+                    return err;
+                };
+                self.encoder_open = true;
+                resources.fence.waitCompute(encoder.*);
+            }
+            self.spans[index] = .{ .kind = kind };
+            self.span_count += 1;
+            self.active_span = index;
+        }
+
+        /// On stage-only devices the returned uninstrumented encoder still waits for all writes of the previous span.
+        pub fn endSpan(self: *Self, encoder: *mtl.ComputeEncoder) !void {
+            if (!self.enabled()) return;
+            if (self.state != .recording or !self.encoder_open) return error.CounterNotRecording;
+            const index = self.active_span orelse return error.NoActiveCounterSpan;
+            const resources = self.resources.?;
+            if (self.hardware.mode() == .dispatch) {
+                try resources.samples.sample(encoder.*, index * 2 + 1);
+            } else {
+                resources.fence.update(encoder.*);
+                encoder.end();
+                self.encoder_open = false;
+                const cb = self.command_buffer.?;
+                const id = mtl.objc.msg(?mtl.objc.Id, cb.id, "computeCommandEncoderWithDispatchType:", .{
+                    @backingInt(mtl.DispatchType.serial),
+                }) orelse {
+                    self.state = .broken;
+                    return error.CounterEncoderCreationFailed;
+                };
+                encoder.* = .{ .id = id };
+                self.encoder_open = true;
+                resources.fence.waitCompute(encoder.*);
+            }
+            self.active_span = null;
+        }
+
+        /// Ends the final encoder before the caller's existing commit/wait; resolution requires completion.
+        pub fn finishEncoding(self: *Self, encoder: *mtl.ComputeEncoder) !void {
+            if (!self.enabled()) {
+                encoder.end();
+                self.encoder_open = false;
+                return;
+            }
+            if (self.state != .recording or !self.encoder_open) return error.CounterNotRecording;
+            if (self.active_span != null) return error.UnclosedCounterSpan;
             encoder.end();
             self.encoder_open = false;
+            self.state = .resolved;
         }
-        try self.discardAfterCompletion();
-    }
 
-    /// No wait or fallback; results are borrowed until beginCommand, discardAfterCompletion or deinit.
-    pub fn readAfterCompletion(self: *Recorder) ![]const Span {
-        if (!self.enabled()) return &.{};
-        if (self.state == .read) return self.spans[0..self.span_count];
-        if (self.state != .resolved) return error.CounterResultsNotEncoded;
-        const cb = self.command_buffer.?;
-        const status = cb.status();
-        if (status == .@"error") return error.CounterCommandFailed;
-        if (status != .completed) return error.CounterCommandNotCompleted;
-        const resources = self.resources.?;
-        const calibration = Calibration{
-            .before = self.clock_before,
-            .after = counters.sampleClocks(resources.device),
-        };
-        if (self.span_count == 0) {
+        /// Cancels unsubmitted work, closing any surviving encoder, including after encoder creation failure.
+        pub fn cancelEncoding(self: *Self, encoder: *mtl.ComputeEncoder) !void {
+            if (self.command_buffer) |cb| {
+                if (cb.status() != .not_enqueued) return error.CounterCommandAlreadySubmitted;
+            }
+            if (self.encoder_open) {
+                encoder.end();
+                self.encoder_open = false;
+            }
+            try self.discardAfterCompletion();
+        }
+
+        /// No wait or fallback; results are borrowed until beginCommand, discardAfterCompletion or deinit.
+        pub fn readAfterCompletion(self: *Self) ![]const SpanT_ {
+            if (!self.enabled()) return &.{};
+            if (self.state == .read) return self.spans[0..self.span_count];
+            if (self.state != .resolved) return error.CounterResultsNotEncoded;
+            const cb = self.command_buffer.?;
+            const status = cb.status();
+            if (status == .@"error") return error.CounterCommandFailed;
+            if (status != .completed) return error.CounterCommandNotCompleted;
+            const resources = self.resources.?;
+            const calibration = Calibration{
+                .before = self.clock_before,
+                .after = counters.sampleClocks(resources.device),
+            };
+            if (self.span_count == 0) {
+                cb.release();
+                self.command_buffer = null;
+                self.state = .read;
+                return &.{};
+            }
+            const resolved = try resources.samples.resolveCompleted(self.span_count * 2);
+            defer resolved.deinit();
+            const results = resolved.values();
+            // Validate every sample before publishing partial totals; retrying cannot duplicate accumulated calls.
+            for (self.spans[0..self.span_count], 0..) |_, i| {
+                _ = try calibration.duration(results[i * 2].timestamp, results[i * 2 + 1].timestamp);
+            }
+            for (self.spans[0..self.span_count], 0..) |*span, i| {
+                span.begin_timestamp = results[i * 2].timestamp;
+                span.end_timestamp = results[i * 2 + 1].timestamp;
+                span.gpu_seconds = try calibration.duration(span.begin_timestamp, span.end_timestamp);
+                const aggregate = &self.totals[@backingInt(span.kind)];
+                aggregate.calls += 1;
+                aggregate.gpu_seconds += span.gpu_seconds;
+            }
+            self.calibration = calibration;
             cb.release();
             self.command_buffer = null;
             self.state = .read;
-            return &.{};
+            return self.spans[0..self.span_count];
         }
-        const resolved = try resources.samples.resolveCompleted(self.span_count * 2);
-        defer resolved.deinit();
-        const results = resolved.values();
-        // Validate every sample before publishing partial totals; retrying cannot duplicate accumulated calls.
-        for (self.spans[0..self.span_count], 0..) |_, i| {
-            _ = try calibration.duration(results[i * 2].timestamp, results[i * 2 + 1].timestamp);
-        }
-        for (self.spans[0..self.span_count], 0..) |*span, i| {
-            span.begin_timestamp = results[i * 2].timestamp;
-            span.end_timestamp = results[i * 2 + 1].timestamp;
-            span.gpu_seconds = try calibration.duration(span.begin_timestamp, span.end_timestamp);
-            const aggregate = &self.totals[@backingInt(span.kind)];
-            aggregate.calls += 1;
-            aggregate.gpu_seconds += span.gpu_seconds;
-        }
-        self.calibration = calibration;
-        cb.release();
-        self.command_buffer = null;
-        self.state = .read;
-        return self.spans[0..self.span_count];
-    }
 
-    pub fn aggregates(self: *const Recorder) [class_count]Aggregate {
-        return self.totals;
-    }
+        pub fn aggregates(self: *const Self) [class_n]Aggregate {
+            return self.totals;
+        }
 
-    /// Discards closed, unsubmitted or completed recordings; in-flight resources are never reused.
-    pub fn discardAfterCompletion(self: *Recorder) !void {
-        if (self.encoder_open) return error.CounterEncoderStillOpen;
-        if (self.command_buffer) |cb| {
-            switch (cb.status()) {
-                .not_enqueued, .completed, .@"error" => {},
-                else => return error.CounterCommandNotCompleted,
+        /// Discards closed, unsubmitted or completed recordings; in-flight resources are never reused.
+        pub fn discardAfterCompletion(self: *Self) !void {
+            if (self.encoder_open) return error.CounterEncoderStillOpen;
+            if (self.command_buffer) |cb| {
+                switch (cb.status()) {
+                    .not_enqueued, .completed, .@"error" => {},
+                    else => return error.CounterCommandNotCompleted,
+                }
+                cb.release();
+                self.command_buffer = null;
             }
-            cb.release();
-            self.command_buffer = null;
+            self.state = .idle;
+            self.span_count = 0;
+            self.active_span = null;
+            self.totals = @splat(.{});
+            self.calibration = null;
         }
-        self.state = .idle;
-        self.span_count = 0;
-        self.active_span = null;
-        self.totals = @splat(.{});
-        self.calibration = null;
-    }
 
-    /// Unique ownership: do not copy; cancel unsubmitted work or await completion before destruction.
-    pub fn deinit(self: *Recorder) !void {
-        try self.discardAfterCompletion();
-        if (self.resources) |resources| {
-            resources.deinit();
-            self.allocator.free(self.spans);
+        /// Unique ownership: do not copy; cancel unsubmitted work or await completion before destruction.
+        pub fn deinit(self: *Self) !void {
+            try self.discardAfterCompletion();
+            if (self.resources) |resources| {
+                resources.deinit();
+                self.allocator.free(self.spans);
+            }
+            self.* = .{ .allocator = self.allocator };
         }
-        self.* = .{ .allocator = self.allocator };
-    }
-};
+    };
+}
 
 test "calibration converts GPU ticks rather than CPU span time" {
     const calibration = Calibration{ .before = .{ .cpu = 1000, .gpu = 100 }, .after = .{ .cpu = 5000, .gpu = 300 } };

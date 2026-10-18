@@ -7,6 +7,7 @@ const Fence = @import("../../core/fence.zig").Fence;
 const Ref = @import("weights.zig").Ref;
 const eng = @import("engine.zig");
 const Engine = eng.Engine;
+const Rep = eng.Rep;
 
 /// A committed plain round: its command buffer and when its encoding began.
 const Pending = struct { cb: mtl.CommandBuffer, t_enc: u64, committed: u64 };
@@ -17,7 +18,9 @@ fn plainRound(e: *Engine, x: *fwd.Ctx, from: ?Ref, to: Ref, pos: u32) Pending {
     const fence = e.round_fence.?;
     const cb = e.queue.commandBuffer();
     if (from == null and e.ev > 0) cb.waitFor(e.event, e.ev);
-    const b = .{ .cb = cb, .enc = cb.compute(.serial) };
+    const enc = cb.compute(.serial);
+    if (e.rec) |rec| rec.beginCommand(cb) catch {};
+    const b = .{ .cb = cb, .enc = enc };
     if (from != null) fence.wait(b.enc);
     if (from) |f| {
         b.enc.setPipeline(x.k.copy_u32);
@@ -32,7 +35,13 @@ fn plainRound(e: *Engine, x: *fwd.Ctx, from: ?Ref, to: Ref, pos: u32) Pending {
     defer x.draws = prior;
     fwd.head(x, b.enc, e.sc.hidden, e.sc.logits, to, 1);
     fence.update(b.enc);
-    b.enc.end();
+    // The recorder's finishEncoding ends the encoder (its contract); only end it here when no recorder did.
+    var enc_mut = b.enc;
+    const recorder_ended = if (e.rec) |rec| blk: {
+        rec.finishEncoding(&enc_mut) catch break :blk false;
+        break :blk true;
+    } else false;
+    if (!recorder_ended) b.enc.end();
     e.ev += 1;
     b.cb.signal(e.event, e.ev);
     b.cb.commit();
@@ -47,6 +56,20 @@ fn waitRound(e: *Engine, p: Pending) !void {
         e.event.set(e.ev);
         std.log.err("glm: command buffer failed: {s}", .{msg});
         return error.GpuFailed;
+    }
+    if (e.rec) |rec| {
+        // plain_rounds waits on each cb; read spans here and append to the per-rep table.
+        const spans = rec.readAfterCompletion() catch return;
+        if (e.span_table) |table| {
+            var rep: Rep = .{ .gpu_seconds_whole = e.gpu[1] - e.gpu[0] };
+            for (spans) |s| {
+                rep.span_count += 1;
+                const idx = @intFromEnum(s.kind);
+                rep.per_class_seconds[idx] += s.gpu_seconds;
+                rep.per_class_calls[idx] += 1;
+            }
+            table.append(e.gpa, rep) catch {};
+        }
     }
 }
 

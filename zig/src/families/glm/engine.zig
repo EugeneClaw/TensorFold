@@ -20,10 +20,36 @@ const plain_rounds = @import("plain_rounds.zig");
 const ranks = @import("ranks.zig");
 const frags = @import("../../core/frags.zig");
 const residency = @import("residency.zig");
+const counters_class = @import("counters_class.zig");
 const Ref = wts.Ref;
 const lanes = @import("lanes");
 
 pub const Reason = enum { stop, length, cancelled };
+
+/// One rep's measured rollup: per-class GPU seconds + wall clock + encoding time. BUBBLES derives per-rep from these.
+pub const Rep = struct {
+    wall_seconds: f64 = 0,
+    encode_seconds: f64 = 0,
+    gpu_seconds_whole: f64 = 0, // the round's GPU start..end (sums span classes to a wall, but separate from wall_seconds)
+    per_class_seconds: [counters_class.Kind.count]f64 = @splat(0),
+    per_class_calls: [counters_class.Kind.count]u64 = @splat(0),
+    span_count: usize = 0, // total spans recorded for this rep
+    prompt_tokens: u32 = 0,
+    picked_rows: u32 = 0, // 1-row or 4-row windows
+};
+
+/// The per-rep accumulator; the engine appends one Rep per round or prompt chunk and tf-glm-run prints the table.
+pub const SpanTable = std.ArrayList(Rep);
+
+/// B3 adaptive-depth controller: one depth switch in the rounds loop. The engine records each event
+/// so tf-glm-run can print the switch log and per-prompt throughput effect.
+pub const SwitchEvent = struct {
+    round: u64,
+    old_depth: u32,
+    new_depth: u32,
+    rolling_rate: f64,
+    direction: []const u8, // "drop" or "restore"
+};
 
 pub const Result = struct {
     reason: Reason,
@@ -39,6 +65,13 @@ pub const Result = struct {
     gap_seconds: f64 = 0, // the GPU idle between consecutive rounds
     copy_rounds: u64 = 0, // rounds whose drafts were copied from earlier in the history, and their drafts kept
     copy_accepted: u64 = 0,
+    // B3 adaptive-depth: switches observed during the reply, the final depth it ended on, and the
+    // overall accept ratio (kept/drafted) over non-copy rounds. The engine formats the switch log
+    // into `adaptive_log` (caller frees) when at least one switch happened.
+    adaptive_switches: u64 = 0,
+    adaptive_final_depth: u32 = 0,
+    adaptive_avg_accept: f64 = 0,
+    adaptive_log: ?[]u8 = null,
     // GLM_RANKS=1: rounds by drafts kept m: [m][0] all kept, else the target's place among the head's choices at the miss
     draft_ranks: [st.max_rows][4]u32 = @splat(@splat(0)),
 };
@@ -80,6 +113,10 @@ pub const Engine = struct {
     round_fence: ?Fence = null, // orders pipelined plain rounds on the GPU (a shared event's wait is slower)
     pr: ?prompt_mod.Prompt, // prompt chunks on the tensor units (null: every prompt row in 16-row decode windows)
     ep: ?*ep_mod.Ep, // expert parallel with a peer Mac (GLM_EP names this Mac's link settings)
+    /// GLM_COUNTER_SPANS=1: per-class GPU timestamp spans, owned by the engine, threaded into every Ctx.
+    rec: ?*counters_class.Recorder = null,
+    /// Per-rep span rollup; the engine clears and appends one entry per round or prompt chunk.
+    span_table: ?*SpanTable = null,
     trace_last: ?Ref = null, // a prompt's last row at every capture point (each layer's sublayers), for a path comparison
     margins: ?*std.ArrayList(f32) = null, // each emitted token's top-two logit margin (its row's logits), for a path comparison
     chunk_rows: u32 = prompt_mod.max_rows, // a prompt chunk's rows at most (GLM_CHUNK: smaller, to check chunk-size invariance)
@@ -101,6 +138,20 @@ pub const Engine = struct {
     fused_route: bool = true, // GLM_ROUTE=0: the Python family's cast, router and top-k launches
     draft_vocab: u32 = 154880, // GLM_DRAFT_VOCAB: the MTP head drafts from the vocabulary's first this many tokens
     committed: u64 = 0, // when the last command buffer was committed (mach ticks)
+    /// B3: --draft-depth N (or GLM_DRAFT_DEPTH) overrides the generate() depth argument; 0 = no override.
+    draft_depth: u32 = 0,
+    /// B3: GLM_ADAPTIVE_DEPTH=1 / --adaptive — the rolling accept rate drops d3→d2 and restores on recovery.
+    /// Threshold rationale: E1 measured the d3-accept distribution across 7 mixed prompts (long.json ×4
+    /// + speed-prompts ×2 + short.json ×1, all on v1.0.12). The d3 tail at <70% accept is 71.4% of the
+    /// distribution (5/7 prompts); the d2 tail is 28.6% (2/7). Switching d3→d2 below ~65% d3-accept
+    /// recovers 7-17 tok/s on the losers (synthetic-pair p16k+p131k and the p76800 anomaly) without
+    /// losing any of the 3 high-accept winners. Default threshold = 0.65; restore above 0.75 (hysteresis).
+    adaptive_depth: bool = false,
+    adaptive_threshold: f64 = 0.65, // below this rolling accept rate, drop d3→d2
+    adaptive_high: f64 = 0.75, // above this rolling accept rate, restore d2→d3
+    adaptive_window: u32 = 10, // rolling window size in non-copy rounds
+    adaptive_min: u32 = 2, // floor depth (the d2 target)
+    adaptive_max: u32 = 3, // ceiling depth (the d3 starting point)
 
     /// The checkpoint in `dir`, caches for `cap` tokens; GLM_LAYERS=N: the first N layers only; GLM_EP=settings: half the experts.
     pub fn load(gpa: std.mem.Allocator, dir: []const u8, cap: u32) !*Engine {
@@ -124,12 +175,21 @@ pub const Engine = struct {
         e.committed = 0;
         e.ep = null;
         e.pr = null;
+        e.rec = null;
+        e.span_table = null;
         e.trace_last = null;
         e.margins = null;
         e.chunk_rows = prompt_mod.max_rows;
         e.cut = if (platform.c.getenv("GLM_CUTS")) |v| std.fmt.parseInt(u32, std.mem.span(v), 10) catch 0 else 0;
         e.copy_min = if (platform.c.getenv("GLM_COPY")) |v| std.math.clamp(std.fmt.parseInt(u32, std.mem.span(v), 10) catch 0, 0, 8) else 0;
         e.rank_log = if (platform.c.getenv("GLM_RANKS")) |v| v[0] == '1' else false;
+        e.draft_depth = if (platform.c.getenv("GLM_DRAFT_DEPTH")) |v| std.fmt.parseInt(u32, std.mem.span(v), 10) catch 0 else 0;
+        e.adaptive_depth = if (platform.c.getenv("GLM_ADAPTIVE_DEPTH")) |v| v.len > 0 and v[0] == '1' else false;
+        if (platform.c.getenv("GLM_ADAPTIVE_THRESHOLD")) |v| e.adaptive_threshold = std.fmt.parseFloat(f64, std.mem.span(v)) catch 0.65;
+        if (platform.c.getenv("GLM_ADAPTIVE_MAX")) |v| e.adaptive_max = std.fmt.parseInt(u32, std.mem.span(v), 10) catch 3 else e.adaptive_max = 3;
+        if (platform.c.getenv("GLM_ADAPTIVE_MIN")) |v| e.adaptive_min = std.fmt.parseInt(u32, std.mem.span(v), 10) catch 2 else e.adaptive_min = 2;
+        if (platform.c.getenv("GLM_ADAPTIVE_HIGH")) |v| e.adaptive_high = std.fmt.parseFloat(f64, std.mem.span(v)) catch 0.75 else e.adaptive_high = 0.75;
+        if (platform.c.getenv("GLM_ADAPTIVE_WINDOW")) |v| e.adaptive_window = std.math.clamp(std.fmt.parseInt(u32, std.mem.span(v), 10) catch 10, 2, 64) else e.adaptive_window = 10;
         e.sampling = try fwd.envSampling(platform.c.getenv);
         if (platform.c.getenv("GLM_CHUNK")) |v| e.chunk_rows = std.math.clamp(std.fmt.parseInt(u32, std.mem.span(v), 10) catch prompt_mod.max_rows, st.max_rows + 1, prompt_mod.max_rows);
         e.ep_arena = .init(gpa);
@@ -233,6 +293,36 @@ pub const Engine = struct {
         if (vision) |lim| try vision_mod.attach(e, gpa, dir, f.bytes[0..f.size], lim); // --vision: the tower and its rows
         errdefer if (e.vision) |v| v.deinit();
         residency.wire(e); // GLM_RESIDENCY's opt-in set, then the idle keepalive's target
+        // GLM_COUNTER_SPANS=1: the counter-span recorder, allocated LAST — after every pipeline
+        // (kernels.load, k.widen) and buffer (wts.load, the arenas) exists. A MTLCounterSampleBuffer
+        // created earlier poisons this OS's AGX driver: pipelines created after it (the wide set's
+        // embed among them) SIGSEGV in -[AGXG17XFamilyComputeContext setComputePipelineState:] on
+        // their first bind; the fault needs no counter call at all (verified GLM_COUNTER_SPAN_BIND=0,
+        // sites=0, 2 layers and 45, KERN_INVALID_ADDRESS 0x790 at the warmup's first embed bind).
+        if (std.c.getenv("GLM_COUNTER_SPANS")) |cs_env| {
+            if (cs_env[0] == '1') {
+                // Metal's MTLCounterSampleBuffer caps at 32768 B (8 B per sample × 4096 samples × 2 samples/span = 2048 spans).
+                const max_spans: usize = if (std.c.getenv("GLM_COUNTER_MAX_SPANS")) |vv| std.fmt.parseInt(usize, std.mem.span(vv), 10) catch 2048 else 2048;
+                if (gpa.create(counters_class.Recorder)) |rec_ptr| {
+                    rec_ptr.* = try counters_class.Recorder.init(gpa, e.device, .{ .enabled = true, .max_spans = max_spans });
+                    rec_ptr.sites = if (std.c.getenv("GLM_COUNTER_SPAN_SITES")) |v| v[0] != '0' else true;
+                    errdefer {
+                        rec_ptr.deinit() catch {};
+                        gpa.destroy(rec_ptr);
+                    }
+                    // Span table on the heap so the pointer outlives this scope.
+                    const table_ptr = try gpa.create(SpanTable);
+                    table_ptr.* = try SpanTable.initCapacity(gpa, 64);
+                    errdefer {
+                        table_ptr.deinit();
+                        gpa.destroy(table_ptr);
+                    }
+                    e.rec = rec_ptr;
+                    e.span_table = table_ptr;
+                    std.log.info("glm: GLM_COUNTER_SPANS=1, max_spans={d}, class_count={d}", .{ max_spans, counters_class.Kind.count });
+                } else |_| return error.OutOfMemory;
+            }
+        }
         // a process's first prompt pays a one-time cost: every rank of a pair pays it here at the same step (GLM_NO_WARMUP: skip)
         if (e.pr != null and cap >= 128 and platform.c.getenv("GLM_NO_WARMUP") == null) {
             var ids: [64]u32 = undefined;
@@ -269,6 +359,14 @@ pub const Engine = struct {
 
     pub fn deinit(e: *Engine) void {
         const gpa = e.gpa;
+        if (e.span_table) |t| {
+            t.deinit(gpa);
+            gpa.destroy(t);
+        }
+        if (e.rec) |rec| {
+            rec.deinit() catch {};
+            gpa.destroy(rec);
+        }
         if (e.residency) |set| {
             e.queue.removeResidencySet(set);
             set.deinit();
@@ -310,14 +408,17 @@ pub const Engine = struct {
     }
 
     pub fn ctx(e: *Engine) fwd.Ctx {
-        return .{ .k = e.k, .c = &e.c, .w = e.w, .s = &e.s, .sc = &e.sc, .ep = e.ep, .fused_route = e.fused_route, .draft_vocab = e.draft_vocab };
+        return .{ .k = e.k, .c = &e.c, .w = e.w, .s = &e.s, .sc = &e.sc, .ep = e.ep, .fused_route = e.fused_route, .draft_vocab = e.draft_vocab, .rec = e.rec };
     }
 
     /// A command buffer ordered after the last one this engine committed.
+    /// The recorder (when present) is bound on this cb; per-class spans may rotate the encoder (stage mode) inside the caller's work.
     pub fn begin(e: *Engine) struct { cb: mtl.CommandBuffer, enc: mtl.ComputeEncoder } {
         const cb = e.queue.commandBuffer();
         if (e.ev > 0) cb.waitFor(e.event, e.ev);
-        return .{ .cb = cb, .enc = cb.compute(.serial) };
+        const enc = cb.compute(.serial);
+        if (e.rec) |rec| rec.beginCommand(cb) catch {};
+        return .{ .cb = cb, .enc = enc };
     }
 
     /// Commit and wait: no work of this engine is in flight once it returns, whatever the caller does next.
@@ -327,7 +428,14 @@ pub const Engine = struct {
 
     /// finish; `spin`: the host spins on the buffer's status instead of sleeping (a window's picks read as it ends).
     pub fn finishBy(e: *Engine, cb: mtl.CommandBuffer, enc: mtl.ComputeEncoder, spin: bool) !void {
-        enc.end();
+        // The recorder's finishEncoding ends the encoder (its contract, metal_counter_consumer relies on it);
+        // only end it here when no recorder did. The local copy is mutable for the recorder's writer.
+        var enc_mut = enc;
+        const recorder_ended = if (e.rec) |rec| blk: {
+            rec.finishEncoding(&enc_mut) catch break :blk false;
+            break :blk true;
+        } else false;
+        if (!recorder_ended) enc.end();
         e.ev += 1;
         cb.signal(e.event, e.ev);
         cb.commit();
@@ -343,6 +451,20 @@ pub const Engine = struct {
             return error.GpuFailed;
         }
         if (e.ep) |ep| if (ep.failed.load(.acquire) or ep.gaveUp() > 0) return error.EpLinkFailed;
+        if (e.rec) |rec| {
+            // Wait already completed; read spans and aggregate per-class totals for this cb.
+            const spans = rec.readAfterCompletion() catch return;
+            if (e.span_table) |table| {
+                var rep: Rep = .{ .gpu_seconds_whole = e.gpu[1] - e.gpu[0] };
+                for (spans) |s| {
+                    rep.span_count += 1;
+                    const idx = @intFromEnum(s.kind);
+                    rep.per_class_seconds[idx] += s.gpu_seconds;
+                    rep.per_class_calls[idx] += 1;
+                }
+                table.append(e.gpa, rep) catch {};
+            }
+        }
     }
 
     /// Wait until every command buffer this engine committed has completed (before the host touches shared state).
@@ -370,6 +492,9 @@ pub const Engine = struct {
     pub const profile = checks.profile;
     pub const checkMatmul = checks.checkMatmul;
     pub const profilePrompt = checks.profilePrompt;
+    pub const profilePromptAt = checks.profilePromptAt;
+    pub const counterSpans = checks.counterSpans;
+    pub const counterSpanDrive = checks.counterSpanDrive;
 
     /// One reply, greedy or sampled by `e.sampling`; `depth` drafts a round (drafted equals plain, depth 0).
     pub fn generate(e: *Engine, prompt: []const u32, max_tokens: usize, eos: []const u32, depth: usize, out: Out) !Result {
@@ -378,8 +503,18 @@ pub const Engine = struct {
         const P: u32 = @intCast(prompt.len);
         if (e.ep != null and e.sampling != null and e.sampling.?.temperature > 0) return error.SampledPeerUnsupported; // the backend's refusal, before any state moves or the peer hears of it
         if (prompt.len == 0) return error.EmptyPrompt;
-        const d: u32 = @intCast(if (e.w.mtp == null) 0 else @min(depth, st.max_rows - 1));
-        if (prompt.len + max_tokens + d + 1 > e.s.cap) return error.ContextFull;
+        // B3: --draft-depth N overrides the depth arg (single value used for the whole reply).
+        // --adaptive (or GLM_ADAPTIVE_DEPTH=1) starts at adaptive_max and switches per-round.
+        const arg_d: u32 = @intCast(if (e.w.mtp == null) 0 else @min(depth, st.max_rows - 1));
+        var d: u32 = if (e.draft_depth > 0) e.draft_depth else arg_d;
+        if (e.adaptive_depth) {
+            if (d < e.adaptive_min) d = e.adaptive_min;
+            if (d > e.adaptive_max) d = e.adaptive_max;
+        }
+        // Prefill uses the resolved d. Adaptive mode checks the cap against the larger of d and the
+        // ceiling, so a switch to adaptive_max mid-stream never trips ContextFull.
+        const cap_check_d: u32 = if (e.adaptive_depth) @max(d, e.adaptive_max) else d;
+        if (prompt.len + max_tokens + cap_check_d + 1 > e.s.cap) return error.ContextFull;
         const pool = mtl.objc.Pool.push();
         defer pool.pop();
         e.sync();
@@ -467,6 +602,20 @@ pub const Engine = struct {
         u32s(e.sc.next, 1)[0] = tok;
         var last_end: f64 = 0;
         var round_draws: fwd.Draws = .{}; // the current decode round's rules, rebuilt each round
+        // B3 adaptive-depth controller: ring buffer of recent accept rates from non-copy rounds.
+        // Sized to the maximum GLM_ADAPTIVE_WINDOW (64). The min-separation guard (>=4 rounds
+        // between switches) prevents flapping when the rate jitters around the threshold.
+        var adaptive_buf: [64]f64 = @splat(0);
+        var adaptive_buf_idx: u32 = 0;
+        var adaptive_buf_len: u32 = 0;
+        var adaptive_sum: f64 = 0;
+        var adaptive_accepted: u64 = 0;
+        var adaptive_drafted: u64 = 0;
+        var adaptive_last_switch: u64 = 0;
+        var adaptive_switches_local: u64 = 0;
+        var adaptive_log_buf: [32]SwitchEvent = @splat(.{ .round = 0, .old_depth = 0, .new_depth = 0, .rolling_rate = 0, .direction = "" });
+        var adaptive_log_len: u32 = 0;
+        const min_separation: u64 = 4;
         while (true) {
             const t_enc = platform.c.mach_absolute_time();
             const b = e.begin();
@@ -533,6 +682,60 @@ pub const Engine = struct {
             res.rounds += 1;
             res.drafted += R - 1;
             res.accepted += keep - 1;
+            // B3: record the round's accept rate (skipped on copy rounds — the MTP head didn't draft).
+            if (e.adaptive_depth and copied == 0 and d > 0) {
+                adaptive_accepted += keep - 1;
+                adaptive_drafted += d;
+                const rate: f64 = @as(f64, @floatFromInt(keep - 1)) / @as(f64, @floatFromInt(d));
+                const win = @as(u32, e.adaptive_window);
+                if (adaptive_buf_len < win) {
+                    adaptive_buf[adaptive_buf_len] = rate;
+                    adaptive_buf_len += 1;
+                    adaptive_sum += rate;
+                } else {
+                    const old = adaptive_buf[adaptive_buf_idx];
+                    adaptive_buf[adaptive_buf_idx] = rate;
+                    adaptive_buf_idx = @intCast((adaptive_buf_idx + 1) % win);
+                    adaptive_sum += rate - old;
+                }
+                // Need at least half a window of data before deciding — prevents reacting to the
+                // first few rounds' transient (warmup rounds can have very low accept).
+                const decide_at: u32 = @max(@divFloor(win, 2), 1);
+                if (adaptive_buf_len >= decide_at and res.rounds - adaptive_last_switch >= min_separation) {
+                    const rolling: f64 = adaptive_sum / @as(f64, @floatFromInt(adaptive_buf_len));
+                    if (d == e.adaptive_max and rolling < e.adaptive_threshold) {
+                        if (adaptive_log_len < adaptive_log_buf.len) {
+                            adaptive_log_buf[adaptive_log_len] = .{
+                                .round = res.rounds,
+                                .old_depth = d,
+                                .new_depth = e.adaptive_min,
+                                .rolling_rate = rolling,
+                                .direction = "drop",
+                            };
+                            adaptive_log_len += 1;
+                        }
+                        adaptive_switches_local += 1;
+                        adaptive_last_switch = res.rounds;
+                        d = e.adaptive_min;
+                        std.log.info("glm: B3 adaptive drop d{d}->d{d} at round {d}, rolling accept {d:.3} < {d:.3}", .{ e.adaptive_max, e.adaptive_min, res.rounds, rolling, e.adaptive_threshold });
+                    } else if (d == e.adaptive_min and rolling > e.adaptive_high) {
+                        if (adaptive_log_len < adaptive_log_buf.len) {
+                            adaptive_log_buf[adaptive_log_len] = .{
+                                .round = res.rounds,
+                                .old_depth = d,
+                                .new_depth = e.adaptive_max,
+                                .rolling_rate = rolling,
+                                .direction = "restore",
+                            };
+                            adaptive_log_len += 1;
+                        }
+                        adaptive_switches_local += 1;
+                        adaptive_last_switch = res.rounds;
+                        d = e.adaptive_max;
+                        std.log.info("glm: B3 adaptive restore d{d}->d{d} at round {d}, rolling accept {d:.3} > {d:.3}", .{ e.adaptive_min, e.adaptive_max, res.rounds, rolling, e.adaptive_high });
+                    }
+                }
+            }
             if (e.rank_log and copied == 0 and d > 0) {
                 const m = keep - 1;
                 res.draft_ranks[m][if (m == d) 0 else ranks.rankAt(c, e.draft_vocab, e.sc.m_logits, m, picks[m])] += 1;
@@ -566,6 +769,17 @@ pub const Engine = struct {
                 res.reason = quit orelse .cancelled; // rank 1: rank 0's reason (a stop string, a cancel) is its own
                 break;
             }
+        }
+        // B3: finalize the Result's adaptive fields and format the switch log (when any switches fired).
+        res.adaptive_switches = adaptive_switches_local;
+        res.adaptive_final_depth = d;
+        if (adaptive_drafted > 0) res.adaptive_avg_accept = @as(f64, @floatFromInt(adaptive_accepted)) / @as(f64, @floatFromInt(adaptive_drafted));
+        if (adaptive_log_len > 0) {
+            var buf: std.ArrayList(u8) = .empty;
+            for (adaptive_log_buf[0..adaptive_log_len]) |sw| {
+                try buf.print(e.gpa, "  B3 switch round {d}: d{d}->d{d} rolling accept {d:.3} ({s})\n", .{ sw.round, sw.old_depth, sw.new_depth, sw.rolling_rate, sw.direction });
+            }
+            res.adaptive_log = try buf.toOwnedSlice(e.gpa);
         }
         res.decode_seconds = @as(f64, @floatFromInt(platform.c.mach_absolute_time() - t_prompt)) / 24e6;
         return res;

@@ -10,6 +10,9 @@ const moe_route = @import("../../core/moe_route.zig");
 const hc_shape = @import("kernels.zig").hc_shape;
 const hc_core = @import("../../core/hc.zig");
 const wide = @import("wide.zig");
+const counters_class = @import("counters_class.zig");
+pub const SpanKind = counters_class.Kind;
+pub const CounterSpans = counters_class.Recorder;
 const Ref = wts.Ref;
 /// The MoE block (moe.zig).
 pub const moe = @import("moe.zig").moe;
@@ -33,6 +36,38 @@ pub const Ctx = struct {
     segs: []const Seg = &.{}, // a shared window's streams in row order (empty: every row is `s`'s)
     inject: ?*const Inject = null, // a prompt pass's image rows over its placeholder embeddings
     draws: ?*const Draws = null, // the rows' draw rules in row order (null: every row draws greedily)
+    /// Counter spans, when the engine loaded one (GLM_COUNTER_SPANS=1): every class wrap calls it.
+    /// Null everywhere else; the SpanGuard.skip returns a closed guard.
+    rec: ?*CounterSpans = null,
+};
+
+/// RAII guard for a single class's GPU counter span. `begin` opens the recorder span; `end` closes it.
+/// Both no-op when the class is skipped (no empty spans in profile mode) or when no recorder is loaded.
+/// Use with `defer` so any early return between begin and end still flushes the span.
+pub const SpanGuard = struct {
+    open: bool = false,
+
+    /// Open a span if `kind` is not skipped AND a recorder is bound and enabled; otherwise no-op.
+    /// Takes `*const mtl.ComputeEncoder` so callers can pass `&e` of const-implicit function parameters; the recorder's
+    /// mutations (stage-mode rotation) are absorbed locally — dispatch-mode (Apple Silicon's default) doesn't mutate id.
+    pub fn begin(x: *const Ctx, e: *const mtl.ComputeEncoder, kind: SpanKind) SpanGuard {
+        if (x.skip & kind.bit() != 0) return .{};
+        if (x.rec) |r| if (r.enabled() and r.sites) {
+            var enc_copy: mtl.ComputeEncoder = e.*;
+            r.beginSpan(&enc_copy, kind) catch return .{};
+            return .{ .open = true };
+        };
+        return .{};
+    }
+
+    /// Close an open span. No-op if `begin` returned a closed guard.
+    pub fn end(self: SpanGuard, x: *const Ctx, e: *const mtl.ComputeEncoder) void {
+        if (!self.open) return;
+        if (x.rec) |r| {
+            var enc_copy: mtl.ComputeEncoder = e.*;
+            r.endSpan(&enc_copy) catch {};
+        }
+    }
 };
 
 /// An image prompt's tower output: prompt rows [at, at + n) of each span embed as rows [row, row + n) of `rows`.
@@ -96,6 +131,12 @@ pub fn on(x: *const Ctx, comptime part: []const u8) bool {
 }
 
 /// Launch classes for a profile's knock-outs.
+/// B4 enhancement: `mla_proj`/`mla_attn` and `kda_proj`/`kda_attn` split the meta-classes
+/// `mla` and `kda` so the profile can isolate attention MATH (scores/softmax/values kernels,
+/// KDA's recurrence) from PROJECTIONS (x_proj, kv_b absorption/unabsorption, o_proj, the KDA
+/// in/out GEMMs). `mla` and `kda` are kept as meta-classes — setting EITHER sub-class is the
+/// same as setting the meta-class. Default-off; no behaviour change unless the new bits are
+/// set in `x.skip`/`x.pskip` via the GLM_PROMPT_PROFILE path.
 pub const Class = struct {
     pub const hc: u32 = 1 << 0;
     pub const kda: u32 = 1 << 1;
@@ -109,7 +150,11 @@ pub const Class = struct {
     pub const head: u32 = 1 << 9;
     pub const mtp: u32 = 1 << 10;
     pub const ends: u32 = 1 << 11; // embedding, final mean and norm
-    pub const names = [_][]const u8{ "hc", "kda", "mla", "dense", "route", "routed", "shared", "exchange", "combine", "head", "mtp", "ends" };
+    pub const mla_proj: u32 = 1 << 12; // MLA projections: x_proj, q_norm, qr_proj, kv_b absorb/unabsorb, o_proj
+    pub const mla_attn: u32 = 1 << 13; // MLA attention math: cache writes, key selection (selectKeys), scores/softmax/values
+    pub const kda_proj: u32 = 1 << 14; // KDA projections: in_proj, o_proj GEMMs
+    pub const kda_attn: u32 = 1 << 15; // KDA attention math: the recurrence (kda_pre, kda_scan, kda_post)
+    pub const names = [_][]const u8{ "hc", "kda", "mla", "dense", "route", "routed", "shared", "exchange", "combine", "head", "mtp", "ends", "mla_proj", "mla_attn", "kda_proj", "kda_attn" };
 };
 
 /// Append `bytes` of `src` to the capture (a u32 copy).
@@ -470,8 +515,12 @@ pub fn backbone(x: *Ctx, e: mtl.ComputeEncoder, ids: Ref, rows: u32, pos: u32) v
     const c = x.c;
     const sc = x.sc;
     const k = x.skip;
-    if (k & Class.ends == 0) embed(x, e, ids, rows, pos);
-    const plane = @as(usize, rows) * c.hidden * 2;
+    {
+        var g = SpanGuard.begin(x, &e, .ends);
+        defer g.end(x, &e);
+        if (k & Class.ends == 0) embed(x, e, ids, rows, pos);
+    }
+    const plane = @as(usize, rows) * c.hidden * 2; // a trace's capture points: the decode backbone's
     snap(x, e, sc.h, plane);
     var pending = false;
     var ki: usize = 0;
@@ -479,35 +528,63 @@ pub fn backbone(x: *Ctx, e: mtl.ComputeEncoder, ids: Ref, rows: u32, pos: u32) v
     for (0..c.run) |li| {
         const L = &x.w.layers[li];
         const hcs = L.hc.?;
-        if (k & Class.hc == 0) boundary(x, e, rows, pending, hcs[0], L.in_norm);
+        {
+            var g = SpanGuard.begin(x, &e, .hc);
+            defer g.end(x, &e);
+            if (k & Class.hc == 0) boundary(x, e, rows, pending, hcs[0], L.in_norm);
+        }
         snap(x, e, sc.normed, plane);
         switch (L.attn) {
             .kda => |*a| {
-                if (k & Class.kda == 0) kda(x, e, ki, a, rows);
+                {
+                    var g = SpanGuard.begin(x, &e, .kda);
+                    defer g.end(x, &e);
+                    if (k & Class.kda == 0) kda(x, e, ki, a, rows);
+                }
                 ki += 1;
             },
             .mla => |*a| {
-                if (k & Class.mla == 0) mla(x, e, mi, a, sc.normed, rows, pos);
+                {
+                    var g = SpanGuard.begin(x, &e, .mla);
+                    defer g.end(x, &e);
+                    if (k & Class.mla == 0) mla(x, e, mi, a, sc.normed, rows, pos);
+                }
                 mi += 1;
             },
         }
         snap(x, e, sc.branch, plane);
-        if (k & Class.hc == 0) boundary(x, e, rows, true, hcs[1], L.post_norm);
+        {
+            var g = SpanGuard.begin(x, &e, .hc);
+            defer g.end(x, &e);
+            if (k & Class.hc == 0) boundary(x, e, rows, true, hcs[1], L.post_norm);
+        }
         snap(x, e, sc.normed, plane);
         switch (L.mlp) {
-            .dense => |*d| if (k & Class.dense == 0) denseMlp(x, e, d, sc.normed, rows),
+            .dense => |*d| {
+                var g = SpanGuard.begin(x, &e, .dense);
+                defer g.end(x, &e);
+                if (k & Class.dense == 0) denseMlp(x, e, d, sc.normed, rows);
+            },
             .moe => |*m| moe(x, e, m, sc.normed, rows),
         }
         snap(x, e, sc.branch, plane);
         pending = true;
     }
-    if (k & Class.hc == 0) boundary(x, e, rows, true, null, null);
-    if (k & Class.ends == 0) {
-        e.setPipeline(x.k.stream_mean);
-        bind(e, 0, .{ sc.x[x.xi], sc.raw });
-        e.setValue([2]u32{ c.hidden, rows }, 2);
-        e.dispatchThreads(size(c.hidden, rows, 1), size(256, 1, 1));
-        rms(x, e, sc.raw, x.w.norm, sc.hidden, rows, c.hidden, c.hidden, c.hidden, c.eps);
+    {
+        var g = SpanGuard.begin(x, &e, .hc);
+        defer g.end(x, &e);
+        if (k & Class.hc == 0) boundary(x, e, rows, true, null, null);
+    }
+    {
+        var g = SpanGuard.begin(x, &e, .ends);
+        defer g.end(x, &e);
+        if (k & Class.ends == 0) {
+            e.setPipeline(x.k.stream_mean);
+            bind(e, 0, .{ sc.x[x.xi], sc.raw });
+            e.setValue([2]u32{ c.hidden, rows }, 2);
+            e.dispatchThreads(size(c.hidden, rows, 1), size(256, 1, 1));
+            rms(x, e, sc.raw, x.w.norm, sc.hidden, rows, c.hidden, c.hidden, c.hidden, c.eps);
+        }
     }
     snap(x, e, sc.hidden, plane);
 }
@@ -522,6 +599,8 @@ pub fn headOver(x: *const Ctx, e: mtl.ComputeEncoder, in: Ref, logits: Ref, pick
     if (x.skip & Class.head != 0) return;
     const part = x.c.vocabPart(); // TP2: this Mac's half, its picks merged with the peer's
     const n: u32 = if (vocab > part[0]) @min(vocab, part[1]) - part[0] else 0;
+    var g = SpanGuard.begin(x, &e, .head);
+    defer g.end(x, &e);
     if (n > 0) {
         var q = x.w.head;
         q.n = n;
