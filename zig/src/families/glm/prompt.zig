@@ -673,7 +673,8 @@ pub fn mtp(p: *const Prompt, x: *const fwd.Ctx, e_in: mtl.ComputeEncoder, h: Ref
     fwd.rms(x, e, h, m.hnorm, p.m_eh.at(@as(usize, D) * 2), M, D, D, 2 * D, c.eps);
     // GLM_EHPROJ_NAX=0 backs out to the scalar wide path (operational escape hatch; the
     // tensor-unit kernel is the default and is hash-verified byte-equal on 16k/131k, d0/d3).
-    const eh_nax = if (std.c.getenv("GLM_EHPROJ_NAX")) |v| v[0] != 0 and v[0] != '0' else true; // DEFAULT ON: the W-tile race + column-offset fix (f076ea59) makes the tensor-unit kernel byte-exact at the draft head; GLM_EHPROJ_NAX=0 is the escape hatch
+    // STRUCTURAL VERDICT (mission 3, 2026-10-18): the kernel is CORRECT (byte-gates 8/8, backbone traces 0-byte diff) and +4.2% prefill drafts-on, but the tensor-unit MMA's internal reduction order differs from the scalar row kernel's, so m_x differs in sub-bf16-ULP ways that the draft head's sampling amplifies: acceptance 43% vs scalar 57%, decode -14% @131k d3. Bit-exactness with scalar is unachievable while using tensor-unit MMAs (the speedup IS the different reduction order). Default OFF: net win only for prefill-bound workloads (total window +4% at d3); decode-bound serving wants the scalar path. GLM_EHPROJ_NAX=1 opts in.
+    const eh_nax = if (std.c.getenv("GLM_EHPROJ_NAX")) |v| v[0] != 0 and v[0] != '0' else false;
     if (m.eh_bf16) |eh| {
         if (eh_nax) wide.bf16Nax(&p.mm.wide.?, e, eh, D, 2 * D, .{ .in = p.m_eh, .ldx = 2 * D, .out = p.m_x, .ldo = D, .rows = M }) else wide.bf16(&p.mm.wide.?, e, eh, D, 2 * D, .{ .in = p.m_eh, .ldx = 2 * D, .out = p.m_x, .ldo = D, .rows = M });
     } else qmm(p, e, p.m_eh, m.eh_proj, p.m_x, M);
