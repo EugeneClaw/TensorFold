@@ -1,0 +1,1 @@
+/Users/eugine/.zenith/projects/20261018T073751Z-tf-speed-round-2-user-authorized-2026-10-18-morning-two-receipte/.zenith/AGENTS.md
