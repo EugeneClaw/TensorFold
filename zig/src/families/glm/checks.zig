@@ -210,14 +210,14 @@ pub fn counterSpans(e: *Engine) !void {
         n_rows += 1;
     }
     inline for (0..counters_class.Kind.count) |i| {
-        if (i != @intFromEnum(counters_class.Kind._round)) sum_classes += sum_per_class[i];
+        if (i != @backingInt(counters_class.Kind._round)) sum_classes += sum_per_class[i];
     }
     const bubbles = (sum_wall - sum_classes - sum_encode) * 1e3;
     std.debug.print("counterSpans: {d} reps, {d} spans total, Σclass={d:.3} ms, Σround span={d:.3} ms, Σwall={d:.3} ms, Σencode={d:.3} ms, BUBBLES={d:.3} ms\n", .{
         n_rows,
         sum_span_count,
         sum_classes * 1e3,
-        sum_per_class[@intFromEnum(counters_class.Kind._round)] * 1e3,
+        sum_per_class[@backingInt(counters_class.Kind._round)] * 1e3,
         sum_wall * 1e3,
         sum_encode * 1e3,
         bubbles,
@@ -280,13 +280,13 @@ pub fn counterSpanDrive(e: *Engine, rows: u32, depth: u32, reps: usize) !void {
     for (tbl.items[start..end], 0..) |rep, ri| {
         var sum_classes: f64 = 0;
         inline for (0..counters_class.Kind.count) |i| {
-            if (i != @intFromEnum(counters_class.Kind._round)) sum_classes += rep.per_class_seconds[i];
+            if (i != @backingInt(counters_class.Kind._round)) sum_classes += rep.per_class_seconds[i];
             std.debug.print("  {d:7.3}     ", .{rep.per_class_seconds[i] * 1e3});
         }
         const bubbles = (rep.wall_seconds - sum_classes - rep.encode_seconds) * 1e3;
         const gpu_bubbles = (rep.gpu_seconds_whole - sum_classes) * 1e3;
         std.debug.print("  {d:8.3}     {d:7.3}    {d:7.3}    {d:7.3}    {d:7.3}     {d:7.3}   {d:7.3}      {d:>5}\n", .{
-            rep.per_class_seconds[@intFromEnum(counters_class.Kind._round)] * 1e3,
+            rep.per_class_seconds[@backingInt(counters_class.Kind._round)] * 1e3,
             rep.wall_seconds * 1e3,
             rep.encode_seconds * 1e3,
             sum_classes * 1e3,
@@ -356,12 +356,7 @@ pub fn profilePromptAt(e: *Engine, prompt: []const u32, reps: usize, only: bool,
         const m = if (mask == all) all else if (only and mask != 0) all & ~mask else mask;
         if (parts) x.pskip = m else x.skip = m;
         for (0..reps + 1) |rep| {
-            // B4: for pos == 0 (legacy first-chunk profile) we reset state each rep; for
-            // pos > 0 the pre-warmup loop already filled state to [pos], so we just replay the
-            // chunk at pos. Each call (warmup rep included) writes the cache for positions
-            // [pos, pos+M) — that's the point of the measurement (knock-out profile of the
-            // GPU ms for the chunk at pos). flipKda after each backbone keeps the KDA
-            // double-buffer coherent across reps; engine.zig's prompt loop does the same.
+            // B4: pos==0 resets state per rep, pos>0 replays the chunk cache-write [pos, pos+M); flipKda keeps the KDA buffers coherent.
             if (pos == 0) e.s.reset();
             const b = e.begin();
             prompt_mod.backbone(pr, &x, b.enc, e.prompt_ids.at(@as(usize, pos) * 4), M, pos);

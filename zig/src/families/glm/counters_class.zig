@@ -29,18 +29,19 @@ pub const Kind = enum(u8) {
     /// The bit mask in forward.zig's Class for this kind, by index parity. Since forward.zig's bit positions
     /// follow declaration order (hc=1<<0 .. ends=1<<11), this is a direct @intFromEnum.
     pub fn bit(self: Kind) u32 {
-        const idx = @intFromEnum(self);
+        const idx = @backingInt(self);
         const shrunk: u5 = @intCast(idx);
         return @as(u32, 1) << @as(u5, @intCast(shrunk));
     }
 
     pub const names = [_][]const u8{
-        "hc", "kda", "mla", "dense", "route", "routed",
-        "shared", "exchange", "combine", "head", "mtp", "ends", "_round",
+        "hc",     "kda",      "mla",     "dense", "route", "routed",
+        "shared", "exchange", "combine", "head",  "mtp",   "ends",
+        "_round",
     };
 
     pub fn name(self: Kind) []const u8 {
-        return names[@intFromEnum(self)];
+        return names[@backingInt(self)];
     }
 };
 
@@ -52,6 +53,6 @@ test "kind bit parity with forward.zig Class declaration order" {
     // Sanity: every named Kind maps to a unique bit and stays inside the 12+1 range we promise.
     inline for (@typeInfo(Kind).@"enum".field_names, 0..) |f, i| {
         try std.testing.expectEqualStrings(f, Kind.names[i]);
-        try std.testing.expectEqual(@as(u8, i), @intFromEnum(@as(Kind, @enumFromInt(i))));
+        try std.testing.expectEqual(@as(u8, i), @backingInt(@as(Kind, @fromBackingInt(@intCast(i)))));
     }
 }

@@ -1,4 +1,4 @@
-//! GLM-5.3-Flash replies on the native engine at each draft depth: hashes, first differences from depth 0 and the reference, speeds.
+//! GLM-5.3-Flash replies at each draft depth: hashes, first differences from plain and reference, speeds.
 const std = @import("std");
 const platform = @import("sys");
 const mtl = @import("metal");

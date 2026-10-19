@@ -40,13 +40,13 @@ fn headsMm(e: mtl.ComputeEncoder, i: usize, mm: tf.affine_mm.Pipes, pool: Pool, 
     });
 }
 fn ehRows(e: mtl.ComputeEncoder, i: usize, p: *const wide.Pipes, eh: mtl.Buffer, io: Io) void {
-  _ = i;
-  wide.bf16(p, e, .{ .buf = eh }, D, 2 * D, .{ .in = rf(io.x), .ldx = 2 * D, .out = rf(io.y), .ldo = D, .rows = PM });
+    _ = i;
+    wide.bf16(p, e, .{ .buf = eh }, D, 2 * D, .{ .in = rf(io.x), .ldx = 2 * D, .out = rf(io.y), .ldo = D, .rows = PM });
 }
 // Tensor-core (BM=8 BN=64, 8x8 simdgroup MMA in fp32) — prompt-side eh_proj replacement (wide.bf16Nax).
 fn ehRowsNax(e: mtl.ComputeEncoder, i: usize, p: *const wide.Pipes, eh: mtl.Buffer, io: Io) void {
-  _ = i;
-  wide.bf16Nax(p, e, .{ .buf = eh }, D, 2 * D, .{ .in = rf(io.x), .ldx = 2 * D, .out = rf(io.y), .ldo = D, .rows = PM });
+    _ = i;
+    wide.bf16Nax(p, e, .{ .buf = eh }, D, 2 * D, .{ .in = rf(io.x), .ldx = 2 * D, .out = rf(io.y), .ldo = D, .rows = PM });
 }
 
 /// A chunk's dense product: row kernels, or affine_mm (`mm`).

@@ -41,8 +41,7 @@ pub const Rep = struct {
 /// The per-rep accumulator; the engine appends one Rep per round or prompt chunk and tf-glm-run prints the table.
 pub const SpanTable = std.ArrayList(Rep);
 
-/// B3 adaptive-depth controller: one depth switch in the rounds loop. The engine records each event
-/// so tf-glm-run can print the switch log and per-prompt throughput effect.
+/// B3: one depth switch in the rounds loop; the engine records each event for the harness to print.
 pub const SwitchEvent = struct {
     round: u64,
     old_depth: u32,
@@ -65,9 +64,7 @@ pub const Result = struct {
     gap_seconds: f64 = 0, // the GPU idle between consecutive rounds
     copy_rounds: u64 = 0, // rounds whose drafts were copied from earlier in the history, and their drafts kept
     copy_accepted: u64 = 0,
-    // B3 adaptive-depth: switches observed during the reply, the final depth it ended on, and the
-    // overall accept ratio (kept/drafted) over non-copy rounds. The engine formats the switch log
-    // into `adaptive_log` (caller frees) when at least one switch happened.
+    // Switches observed in the reply plus the final depth and the accept ratio, formatted into `adaptive_log`.
     adaptive_switches: u64 = 0,
     adaptive_final_depth: u32 = 0,
     adaptive_avg_accept: f64 = 0,
@@ -140,13 +137,8 @@ pub const Engine = struct {
     committed: u64 = 0, // when the last command buffer was committed (mach ticks)
     /// B3: --draft-depth N (or GLM_DRAFT_DEPTH) overrides the generate() depth argument; 0 = no override.
     draft_depth: u32 = 0,
-    /// B3: GLM_ADAPTIVE_DEPTH=1 / --adaptive — the rolling accept rate drops d3→d2 and restores on recovery.
-    /// Threshold rationale: E1 measured the d3-accept distribution across 7 mixed prompts (long.json ×4
-    /// + speed-prompts ×2 + short.json ×1, all on v1.0.12). The d3 tail at <70% accept is 71.4% of the
-    /// distribution (5/7 prompts); the d2 tail is 28.6% (2/7). Switching d3→d2 below ~65% d3-accept
-    /// recovers 7-17 tok/s on the losers (synthetic-pair p16k+p131k and the p76800 anomaly) without
-    /// losing any of the 3 high-accept winners. Default threshold = 0.65; restore above 0.75 (hysteresis).
-    adaptive_depth: bool = false,
+    /// B3: adaptive drafting is default-on; GLM_ADAPTIVE_DEPTH=0 backs it out.
+    adaptive_depth: bool = true,
     adaptive_threshold: f64 = 0.65, // below this rolling accept rate, drop d3→d2
     adaptive_high: f64 = 0.75, // above this rolling accept rate, restore d2→d3
     adaptive_window: u32 = 10, // rolling window size in non-copy rounds
@@ -184,7 +176,7 @@ pub const Engine = struct {
         e.copy_min = if (platform.c.getenv("GLM_COPY")) |v| std.math.clamp(std.fmt.parseInt(u32, std.mem.span(v), 10) catch 0, 0, 8) else 0;
         e.rank_log = if (platform.c.getenv("GLM_RANKS")) |v| v[0] == '1' else false;
         e.draft_depth = if (platform.c.getenv("GLM_DRAFT_DEPTH")) |v| std.fmt.parseInt(u32, std.mem.span(v), 10) catch 0 else 0;
-        e.adaptive_depth = if (platform.c.getenv("GLM_ADAPTIVE_DEPTH")) |v| v[0] != 0 and v[0] == '1' else false;
+        e.adaptive_depth = if (platform.c.getenv("GLM_ADAPTIVE_DEPTH")) |v| v[0] == '1' else true;
         if (platform.c.getenv("GLM_ADAPTIVE_THRESHOLD")) |v| e.adaptive_threshold = std.fmt.parseFloat(f64, std.mem.span(v)) catch 0.65 else e.adaptive_threshold = 0.65;
         if (platform.c.getenv("GLM_ADAPTIVE_MAX")) |v| e.adaptive_max = std.fmt.parseInt(u32, std.mem.span(v), 10) catch 3 else e.adaptive_max = 3;
         if (platform.c.getenv("GLM_ADAPTIVE_MIN")) |v| e.adaptive_min = std.fmt.parseInt(u32, std.mem.span(v), 10) catch 2 else e.adaptive_min = 2;
@@ -293,12 +285,7 @@ pub const Engine = struct {
         if (vision) |lim| try vision_mod.attach(e, gpa, dir, f.bytes[0..f.size], lim); // --vision: the tower and its rows
         errdefer if (e.vision) |v| v.deinit();
         residency.wire(e); // GLM_RESIDENCY's opt-in set, then the idle keepalive's target
-        // GLM_COUNTER_SPANS=1: the counter-span recorder, allocated LAST — after every pipeline
-        // (kernels.load, k.widen) and buffer (wts.load, the arenas) exists. A MTLCounterSampleBuffer
-        // created earlier poisons this OS's AGX driver: pipelines created after it (the wide set's
-        // embed among them) SIGSEGV in -[AGXG17XFamilyComputeContext setComputePipelineState:] on
-        // their first bind; the fault needs no counter call at all (verified GLM_COUNTER_SPAN_BIND=0,
-        // sites=0, 2 layers and 45, KERN_INVALID_ADDRESS 0x790 at the warmup's first embed bind).
+        // The counter recorder is allocated LAST (after pipelines and buffers); earlier placement SIGSEGVs the first bind.
         if (std.c.getenv("GLM_COUNTER_SPANS")) |cs_env| {
             if (cs_env[0] == '1') {
                 // Metal's MTLCounterSampleBuffer caps at 32768 B (8 B per sample × 4096 samples × 2 samples/span = 2048 spans).
@@ -411,8 +398,7 @@ pub const Engine = struct {
         return .{ .k = e.k, .c = &e.c, .w = e.w, .s = &e.s, .sc = &e.sc, .ep = e.ep, .fused_route = e.fused_route, .draft_vocab = e.draft_vocab, .rec = e.rec };
     }
 
-    /// A command buffer ordered after the last one this engine committed.
-    /// The recorder (when present) is bound on this cb; per-class spans may rotate the encoder (stage mode) inside the caller's work.
+    /// A cb ordered after the last committed one; the recorder (if present) is bound on it and may rotate the encoder.nside the caller's work.
     pub fn begin(e: *Engine) struct { cb: mtl.CommandBuffer, enc: mtl.ComputeEncoder } {
         const cb = e.queue.commandBuffer();
         if (e.ev > 0) cb.waitFor(e.event, e.ev);
@@ -429,8 +415,7 @@ pub const Engine = struct {
 
     /// finish; `spin`: the host spins on the buffer's status instead of sleeping (a window's picks read as it ends).
     pub fn finishBy(e: *Engine, cb: mtl.CommandBuffer, enc: mtl.ComputeEncoder, spin: bool) !void {
-        // The recorder's finishEncoding ends the encoder (its contract, metal_counter_consumer relies on it);
-        // only end it here when no recorder did. The local copy is mutable for the recorder's writer.
+        // finishEncoding is the recorder's to end; this ends the encoder only when no recorder did.
         var enc_mut = enc;
         const recorder_ended = if (e.rec) |rec| blk: {
             rec.finishEncoding(&enc_mut) catch break :blk false;
@@ -459,7 +444,7 @@ pub const Engine = struct {
                 var rep: Rep = .{ .gpu_seconds_whole = e.gpu[1] - e.gpu[0] };
                 for (spans) |s| {
                     rep.span_count += 1;
-                    const idx = @intFromEnum(s.kind);
+                    const idx = @backingInt(s.kind);
                     rep.per_class_seconds[idx] += s.gpu_seconds;
                     rep.per_class_calls[idx] += 1;
                 }
@@ -504,16 +489,15 @@ pub const Engine = struct {
         const P: u32 = @intCast(prompt.len);
         if (e.ep != null and e.sampling != null and e.sampling.?.temperature > 0) return error.SampledPeerUnsupported; // the backend's refusal, before any state moves or the peer hears of it
         if (prompt.len == 0) return error.EmptyPrompt;
-        // B3: --draft-depth N overrides the depth arg (single value used for the whole reply).
-        // --adaptive (or GLM_ADAPTIVE_DEPTH=1) starts at adaptive_max and switches per-round.
+        // B3: --draft-depth N overrides the depth arg; --adaptive (or GLM_ADAPTIVE_DEPTH=1) forces adaptive mode on.
         const arg_d: u32 = @intCast(if (e.w.mtp == null) 0 else @min(depth, st.max_rows - 1));
         var d: u32 = if (e.draft_depth > 0) e.draft_depth else arg_d;
-        if (e.adaptive_depth) {
+        // Depth 0 is the caller's no-drafting choice and stays 0; the controller only adjusts drafting paths.
+        if (e.adaptive_depth and d != 0) {
             if (d < e.adaptive_min) d = e.adaptive_min;
             if (d > e.adaptive_max) d = e.adaptive_max;
         }
-        // Prefill uses the resolved d. Adaptive mode checks the cap against the larger of d and the
-        // ceiling, so a switch to adaptive_max mid-stream never trips ContextFull.
+        // In adaptive mode the cap checks max(d, ceiling): a mid-stream switch to the ceiling cannot trip ContextFull.
         const cap_check_d: u32 = if (e.adaptive_depth) @max(d, e.adaptive_max) else d;
         if (prompt.len + max_tokens + cap_check_d + 1 > e.s.cap) return error.ContextFull;
         const pool = mtl.objc.Pool.push();
@@ -603,9 +587,7 @@ pub const Engine = struct {
         u32s(e.sc.next, 1)[0] = tok;
         var last_end: f64 = 0;
         var round_draws: fwd.Draws = .{}; // the current decode round's rules, rebuilt each round
-        // B3 adaptive-depth controller: ring buffer of recent accept rates from non-copy rounds.
-        // Sized to the maximum GLM_ADAPTIVE_WINDOW (64). The min-separation guard (>=4 rounds
-        // between switches) prevents flapping when the rate jitters around the threshold.
+        // Ring buffer of recent non-copy-round accept rates, sized to the maximum window (64).
         var adaptive_buf: [64]f64 = @splat(0);
         var adaptive_buf_idx: u32 = 0;
         var adaptive_buf_len: u32 = 0;
@@ -616,6 +598,7 @@ pub const Engine = struct {
         var adaptive_switches_local: u64 = 0;
         var adaptive_log_buf: [32]SwitchEvent = @splat(.{ .round = 0, .old_depth = 0, .new_depth = 0, .rolling_rate = 0, .direction = "" });
         var adaptive_log_len: u32 = 0;
+        // Minimum rounds between switch decisions; the guard keeps the rate from flapping at the threshold.
         const min_separation: u64 = 4;
         while (true) {
             const t_enc = platform.c.mach_absolute_time();
@@ -699,9 +682,8 @@ pub const Engine = struct {
                     adaptive_buf_idx = @intCast((adaptive_buf_idx + 1) % win);
                     adaptive_sum += rate - old;
                 }
-                // Need at least half a window of data before deciding — prevents reacting to the
-                // first few rounds' transient (warmup rounds can have very low accept).
-                const decide_at: u32 = @max(@divFloor(win, 2), 1);
+                // Decide only on a full window: a partial window reads the warm-up transient and mis-prices profitable content.
+                const decide_at: u32 = win;
                 if (adaptive_buf_len >= decide_at and res.rounds - adaptive_last_switch >= min_separation) {
                     const rolling: f64 = adaptive_sum / @as(f64, @floatFromInt(adaptive_buf_len));
                     if (d == e.adaptive_max and rolling < e.adaptive_threshold) {

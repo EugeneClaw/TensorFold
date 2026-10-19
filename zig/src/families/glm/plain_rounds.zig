@@ -63,7 +63,7 @@ fn waitRound(e: *Engine, p: Pending) !void {
             var rep: Rep = .{ .gpu_seconds_whole = e.gpu[1] - e.gpu[0] };
             for (spans) |s| {
                 rep.span_count += 1;
-                const idx = @intFromEnum(s.kind);
+                const idx = @backingInt(s.kind);
                 rep.per_class_seconds[idx] += s.gpu_seconds;
                 rep.per_class_calls[idx] += 1;
             }
