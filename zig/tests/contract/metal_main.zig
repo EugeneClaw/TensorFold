@@ -11,6 +11,7 @@ const limits_k = @import("metal_limits.zig");
 const h3_k = @import("metal_h3.zig");
 const h3_topk = @import("metal_h3_topk.zig");
 const drama3_k = @import("metal_drama3.zig");
+const glm_eh_k = @import("metal_glm_eh.zig");
 
 const gemma = @import("metal_gemma4.zig");
 const gemma_embed = @import("metal_gemma4_embed.zig");
@@ -142,6 +143,12 @@ pub fn main(init: std.process.Init) !u8 {
     if (wanted(o, drama3_k.spec().name)) {
         d3norm = try drama3_k.Norm.init(a, device, queue);
         try kernels.append(a, d3norm.?.kernel());
+    }
+    var glm_eh: ?glm_eh_k.Nax = null;
+    defer if (glm_eh) |*n| n.deinit();
+    if (wanted(o, glm_eh_k.spec().name)) {
+        glm_eh = try glm_eh_k.Nax.init(a, device, queue);
+        try kernels.append(a, glm_eh.?.kernel());
     }
     var topk: ?topk_k.TopK = null;
     defer if (topk) |*t| t.deinit();
