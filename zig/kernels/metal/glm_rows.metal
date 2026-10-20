@@ -221,12 +221,7 @@ template <int BITS, bool GLU>
   }
 }
 
-// OUT[m, c] = sum_k X[m, k] * W[c, k] on tensor units: bf16 X / W loaded cooperatively into threadgroup float buffers,
-// then 8x8 simdgroup MMA tiles accumulate in fp32; per-thread fp32->bf16 writeback via the same writeback buffer.
-// Each threadgroup covers (BM x BN) output tile; SG_M x SG_N simdgroups of 32 lanes tile it as 8x8 sub-blocks.
-// A is X[BM, BK=8] loaded row-major; B is the W^T staging (W is [N, K] row-major) read
-// non-transposed: B[l][j] = W[n0+j][k0+l].
-// Grid (n/BN, rows/BM, 1) threadgroups of (SG_M*SG_N*32) threads. Receipt: eh_proj prefill replaces glm_rows_bf16.
+// bf16 tensor-unit GEMM: 8x8 MMA tiles in fp32; A=X[BM,BK=8] row-major, B=W^T non-transposed (b[l][j]=W[n0+j][k0+l]).
 template <int BM, int BN>
 [[kernel]] void glm_rows_bf16_nax(const device bfloat* X [[buffer(0)]], const device bfloat* W [[buffer(1)]],
                                   constant GlmRowDims& d [[buffer(4)]], device bfloat* OUT [[buffer(5)]],
@@ -262,10 +257,7 @@ template <int BM, int BN>
         const int global_c = k0 + c;
         xs_pad[r * A_PAD + c] = (global_r < d.rows && global_c < d.k) ? float(X[x_base + long(r) * d.ldx + k0 + c]) : 0.0f;
       }
-      // Cooperatively load W[BN rows of K=8] from device bf16 into ws_pad as W^T [BK=8, BN] (padded col-major).
-      // Column base is THREADGROUP-scoped (tg.x * BN): all 8 N-simdgroups cooperate on the one full-width
-      // tile. (The shipped kernel used the per-simdgroup n0 here, so 8 copies of different W slices raced
-      // into the same ws_pad slots - review VIII defect 1.)
+      // Load W[BN rows of K=8] into ws_pad as W^T [BK=8, BN]; n_base=tg.x*BN, all N-simdgroups share.
       const int n_base = int(tg.x) * BN;
       for (int e = int(ti); e < 8 * BN; e += TG_THREADS) {
         const int kk = e / BN; // K position (rows of B)
@@ -278,9 +270,7 @@ template <int BM, int BN>
       simdgroup_matrix<float, 8, 8> a_mat;
       simdgroup_matrix<float, 8, 8> b_mat;
       simdgroup_load(a_mat, xs_pad, ulong(A_PAD));
-      // This simdgroup's 8-column slice of the tile (review VIII defect 2 fixed: the per-simdgroup
-      // W slice is staged [kk][nn] = W^T, so the load is NON-transposed: b[l][j] = W[n0+j][k0+l].
-      // The shipped transpose=true read sums over the n index with k fixed - uncorrelated output.)
+      // 8-col slice: staged [kk][nn]=W^T, loaded NON-transposed (b[l][j]=W[n0+j][k0+l]); review VIII defect 2 fixed.
       simdgroup_load(b_mat, ws_pad + sg_n * 8, ulong(B_PAD), ulong2(0, 0), false);
       simdgroup_multiply_accumulate(acc, a_mat, b_mat, acc);
       threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -301,8 +291,7 @@ template <int BM, int BN>
   }
 }
 
-// bf16 GEMM on tensor units: 8 x 64 output tile per threadgroup (1 x 8 simdgroups, BM=8 BN=64).
-// D=4096 / BN=64 = 64 N-tiles; rows (p.rows chunks 2048..16384, all multiples of 8) / BM=8 covers M in full.
+// bf16 tensor-unit GEMM: 8x64 tile/TG (1x8 simdgroups, BM=8 BN=64); D/BN=64 N-tiles, M/BM=8 covers full M.
 template [[host_name("glm_rows_bf16_nax")]] [[kernel]] decltype(glm_rows_bf16_nax<8, 64>) glm_rows_bf16_nax<8, 64>;
 
 #define GLM_ROWS_AT(B)                                                                                                 \

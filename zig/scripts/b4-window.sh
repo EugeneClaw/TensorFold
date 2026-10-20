@@ -1,7 +1,5 @@
 #!/bin/bash
-# B4 ATTENTION-SHARE GATE window: profile a LATE (pos>=100k) chunk of p131k with the
-# finer mla_proj/mla_attn and kda_proj/kda_attn class breakdown. Default-off enhancement.
-# Method (pinned): chunk at position >=100k of p131k; profile separate proj/attn halves.
+# B4 attention gate: late p131k chunk (pos>=100k); mla_proj/mla_attn + kda_proj/kda_attn breakdown.
 set -eo pipefail
 # note: exit codes captured via "|| true" + immediate capture so failures are recorded, not silent
 

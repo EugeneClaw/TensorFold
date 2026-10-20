@@ -1,4 +1,4 @@
-//! A window of 1-16 consecutive rows through GLM-5.3-Flash on one serial encoder, each op in the Python family's decode arithmetic.
+// A window of 1-16 rows through GLM-5.3-Flash on one serial encoder; ops = Python family's decode arithmetic.
 const std = @import("std");
 const mtl = @import("metal");
 const cfg = @import("config.zig");
@@ -16,6 +16,13 @@ pub const CounterSpans = counters_class.Recorder;
 const Ref = wts.Ref;
 /// The MoE block (moe.zig).
 pub const moe = @import("moe.zig").moe;
+/// MLA attention math (absorb / unabsorb / attendDense|Sparse|Blocks / selectKeys / attendIndexed) is in mla_attn.zig.
+pub const mla_attn = @import("mla_attn.zig");
+pub const absorb = mla_attn.absorb;
+pub const unabsorb = mla_attn.unabsorb;
+pub const attendDense = mla_attn.attendDense;
+pub const selectKeys = mla_attn.selectKeys;
+pub const attendIndexed = mla_attn.attendIndexed;
 
 pub const Ctx = struct {
     k: *const Kernels,
@@ -36,20 +43,15 @@ pub const Ctx = struct {
     segs: []const Seg = &.{}, // a shared window's streams in row order (empty: every row is `s`'s)
     inject: ?*const Inject = null, // a prompt pass's image rows over its placeholder embeddings
     draws: ?*const Draws = null, // the rows' draw rules in row order (null: every row draws greedily)
-    /// Counter spans, when the engine loaded one (GLM_COUNTER_SPANS=1): every class wrap calls it.
-    /// Null everywhere else; the SpanGuard.skip returns a closed guard.
+    // Counter spans (GLM_COUNTER_SPANS=1): every wrap calls it; null elsewhere, SpanGuard.skip returns closed.
     rec: ?*CounterSpans = null,
 };
 
-/// RAII guard for a single class's GPU counter span. `begin` opens the recorder span; `end` closes it.
-/// Both no-op when the class is skipped (no empty spans in profile mode) or when no recorder is loaded.
-/// Use with `defer` so any early return between begin and end still flushes the span.
+/// RAII guard for one class's GPU span: begin/end open+close it; no-op when skipped or no recorder; use with `defer`.
 pub const SpanGuard = struct {
     open: bool = false,
 
-    /// Open a span if `kind` is not skipped AND a recorder is bound and enabled; otherwise no-op.
-    /// Takes `*const mtl.ComputeEncoder` so callers can pass `&e` of const-implicit function parameters; the recorder's
-    /// mutations (stage-mode rotation) are absorbed locally — dispatch-mode (Apple Silicon's default) doesn't mutate id.
+    // Open a span if kind not skipped AND recorder bound + enabled; else no-op; takes *const mtl.ComputeEncoder.
     pub fn begin(x: *const Ctx, e: *const mtl.ComputeEncoder, kind: SpanKind) SpanGuard {
         if (x.skip & kind.bit() != 0) return .{};
         if (x.rec) |r| if (r.enabled() and r.sites) {
@@ -130,13 +132,7 @@ pub fn on(x: *const Ctx, comptime part: []const u8) bool {
     return x.pskip & Part.bit(part) == 0;
 }
 
-/// Launch classes for a profile's knock-outs.
-/// B4 enhancement: `mla_proj`/`mla_attn` and `kda_proj`/`kda_attn` split the meta-classes
-/// `mla` and `kda` so the profile can isolate attention MATH (scores/softmax/values kernels,
-/// KDA's recurrence) from PROJECTIONS (x_proj, kv_b absorption/unabsorption, o_proj, the KDA
-/// in/out GEMMs). `mla` and `kda` are kept as meta-classes — setting EITHER sub-class is the
-/// same as setting the meta-class. Default-off; no behaviour change unless the new bits are
-/// set in `x.skip`/`x.pskip` via the GLM_PROMPT_PROFILE path.
+/// Profile knock-out classes; B4 splits mla_proj/mla_attn + kda_proj/kda_attn to separate MATH from PROJECTIONS.
 pub const Class = struct {
     pub const hc: u32 = 1 << 0;
     pub const kda: u32 = 1 << 1;
@@ -172,8 +168,8 @@ pub fn snap(x: *Ctx, e: mtl.ComputeEncoder, src: Ref, plane: usize) void {
 }
 
 pub const Rows = extern struct { rows: i32, width: i32, x_stride: i32, y_stride: i32, eps: f32 };
-const ScoreArgs = extern struct { p0: u32, q_stride: u32, w_stride: u32, s_stride: u32, rows: u32 };
-const SelectArgs = extern struct { p0: u32, top: u32, width: u32, s_stride: u32, i_stride: u32 };
+pub const ScoreArgs = extern struct { p0: u32, q_stride: u32, w_stride: u32, s_stride: u32, rows: u32 };
+pub const SelectArgs = extern struct { p0: u32, top: u32, width: u32, s_stride: u32, i_stride: u32 };
 
 pub fn bind(e: mtl.ComputeEncoder, first: usize, refs: anytype) void {
     inline for (refs, 0..) |r, i| e.setBuffer(r.buf, r.off, first + i);
@@ -239,7 +235,7 @@ pub fn embedRows(x: *const Ctx, e: mtl.ComputeEncoder, ids: Ref, out: Ref, rows:
     e.dispatchThreads(size(x.c.hidden / per, rows, 1), size(256, 1, 1));
 }
 
-/// A block boundary: the pending branch into the streams, then (with `hc`) the next block's mix, split and norm (core/hc.zig).
+/// A block boundary: pending branch into streams, then (with `hc`) next block's mix, split, norm (core/hc.zig).
 pub fn boundary(x: *Ctx, e: mtl.ComputeEncoder, rows: u32, pending: bool, hc: ?wts.Hc, norm: ?Ref) void {
     const sc = x.sc;
     const k = x.k;
@@ -260,7 +256,7 @@ pub fn boundary(x: *Ctx, e: mtl.ComputeEncoder, rows: u32, pending: bool, hc: ?w
     if (pending) x.xi = 1 - x.xi;
 }
 
-/// KDA layer `ki` on `normed`: the stacked projection (kept for a replay), each stream's fused step, the out-projection.
+/// KDA layer `ki` on `normed`: stacked projection (kept for replay), each stream's fused step, the out-projection.
 fn kda(x: *Ctx, e: mtl.ComputeEncoder, ki: usize, w: *const wts.Kda, rows: u32) void {
     const sc = x.sc;
     const tp = x.c.tp > 1; // TP2: this Mac's heads, their out-projection partial summed with the peer's
@@ -328,7 +324,7 @@ pub fn mlaKeys(x: *Ctx, e: mtl.ComputeEncoder, mi: usize, w: *const wts.Mla, x_i
     };
 }
 
-/// The rows' queries (from `xp`), their attention over each segment's cache as written, unabsorb and o_proj into `branch`.
+/// Rows' queries (from `xp`), attention over each segment's cache as written, unabsorb and o_proj into `branch`.
 pub fn mlaAttend(x: *Ctx, e: mtl.ComputeEncoder, mi: usize, w: *const wts.Mla, rows: u32, pos: u32) void {
     const c = x.c;
     const k = x.k;
@@ -367,12 +363,12 @@ fn attend(x: *const Ctx, e: mtl.ComputeEncoder, mi: usize, g: Seg) void {
     const plane = @as(usize, H) * c.i_topk * 2;
     for (0..dense) |ri| {
         const r: usize = g.row0 + ri;
-        attendDense(x, e, x.s.mla[mi].keys, sc.qls.at(r * lat), sc.scores.at(r * plane), sc.probs.at(r * plane), sc.att.at(r * lat), g.pos + @as(u32, @intCast(ri)) + 1);
+        mla_attn.attendDense(x, e, x.s.mla[mi].keys, sc.qls.at(r * lat), sc.scores.at(r * plane), sc.probs.at(r * plane), sc.att.at(r * lat), g.pos + @as(u32, @intCast(ri)) + 1);
     }
-    if (dense < g.rows) attendSparse(x, e, mi, g, dense);
+    if (dense < g.rows) mla_attn.attendSparse(x, e, mi, g, dense);
 }
 
-/// Rows' latent keys, indexer keys and gates into MLA cache `mi` at pos.., their indexer weights into `iw`, the blocks they complete.
+/// Rows' latent keys, indexer keys, gates into MLA cache `mi` at pos..; indexer weights into `iw`; blocks completed.
 pub fn mlaCache(x: *const Ctx, e: mtl.ComputeEncoder, mi: usize, w: *const wts.Mla, x_in: Ref, xp: Ref, xp_stride: u32, iw: Ref, rows: u32, pos: u32) void {
     const c = x.c;
     const k = x.k;
@@ -395,106 +391,7 @@ pub fn mlaCache(x: *const Ctx, e: mtl.ComputeEncoder, mi: usize, w: *const wts.M
     }
 }
 
-/// Every row's 64 heads of q_nope (`qp`, rows qrProj apart) into the latent: qvm on kv_b's key half, or embed_q's qmv.
-pub fn absorb(x: *const Ctx, e: mtl.ComputeEncoder, w: *const wts.Mla, qp: Ref, ql: Ref, rows: u32) void {
-    const c = x.c;
-    if (w.absorbed) |pair| return wide.perHead(&x.k.wide.?, e, pair[0], c.mla_heads, .{ .in = qp, .ldx = c.qrProj(), .out = ql, .ldo = c.mla_heads * c.kv_lora, .rows = rows }, c.nope, c.kv_lora);
-    e.setPipeline(x.k.absorb);
-    bind(e, 0, .{ w.kv_b.w, w.kv_b.s, w.kv_b.b, qp, ql });
-    e.setValue(c.qrProj(), 5);
-    e.setValue(c.mla_heads, 6);
-    e.dispatchGroups(size(1, c.kv_lora / 64, rows * c.mla_heads), size(64, 1, 1));
-}
-
-/// Every row's 64 heads' latent outputs to values [rows, heads * v]: qmv_fast on kv_b's value half, or unembed_out's.
-pub fn unabsorb(x: *const Ctx, e: mtl.ComputeEncoder, w: *const wts.Mla, att: Ref, vals: Ref, rows: u32) void {
-    const c = x.c;
-    if (w.absorbed) |pair| return wide.perHead(&x.k.wide.?, e, pair[1], c.mla_heads, .{ .in = att, .ldx = c.mla_heads * c.kv_lora, .out = vals, .ldo = c.mla_heads * c.v_dim, .rows = rows }, c.kv_lora, c.v_dim);
-    e.setPipeline(x.k.unabsorb);
-    bind(e, 0, .{ w.kv_b.w, w.kv_b.s, w.kv_b.b, att, vals });
-    e.setValue(c.mla_heads, 5);
-    e.dispatchGroups(size(1, c.v_dim / 4, rows * c.mla_heads), size(32, 1, 1));
-}
-
-/// One row's 64 heads over keys [0, n) as one 64-row matrix against the latent keys: scores, a precise softmax, values.
-pub fn attendDense(x: *const Ctx, e: mtl.ComputeEncoder, keys: Ref, q: Ref, scores: Ref, probs: Ref, out: Ref, n: u32) void {
-    const k = x.k;
-    const H = x.c.mla_heads;
-    e.setPipeline(k.latent_scores);
-    bind(e, 0, .{ q, keys, scores });
-    e.setValue([2]i32{ @intCast(n), @intFromBool(n < 256) }, 3); // fewer than 256 keys: the 512 dims in two halves
-    e.dispatchGroups(size((n + 31) / 32, 1, 1), size(2 * H, 1, 1)); // a simdgroup each 16 heads
-    e.setPipeline(k.softmax);
-    bind(e, 0, .{scores});
-    shape(e, 1, .{n});
-    bind(e, 2, .{probs});
-    e.dispatchGroups(size(H, 1, 1), size(((n + 3) / 4 + 31) / 32 * 32, 1, 1));
-    e.setPipeline(k.latent_values);
-    bind(e, 0, .{ probs, keys, out });
-    e.setValue([2]i32{ @intCast(n), if (n > 1024) 1024 else 0 }, 3); // past 1,024 keys: the first 1,024 apart
-    e.dispatchGroups(size(x.c.kv_lora / 32, 1, 1), size(2 * H, 1, 1));
-}
-
-/// A stream's rows [first, rows) past index_topk keys: fp32 block scores, the best blocks in block order plus the tail, the sparse kernel.
-fn attendSparse(x: *const Ctx, e: mtl.ComputeEncoder, mi: usize, g: Seg, first: u32) void {
-    const c = x.c;
-    const sc = x.sc;
-    const n = g.rows - first;
-    const r: usize = g.row0 + first; // the first sparse row's place in the window
-    selectKeys(x, e, mi, sc.qp.at((r * c.qrProj() + c.mla_heads * c.nope) * 2), c.qrProj(), sc.iw.at(r * c.i_heads * 2), sc.sscore, sc.indices, n, g.pos + first);
-    const ql = sc.ql.at(r * c.mla_heads * c.kv_lora * 2);
-    const att = sc.att.at(r * c.mla_heads * c.kv_lora * 2);
-    if (c.tp > 1) return attendIndexed(x, e, mi, ql, sc.indices, att, n, g.pos + g.rows);
-    attendBlocks(x, e, mi, ql, sc.indices, att, n, g.pos + g.rows);
-}
-
-/// `n` rows' 64 heads over their listed keys on the tensor units: each block of attn_span entries its own softmax, then the blocks in order.
-fn attendBlocks(x: *const Ctx, e: mtl.ComputeEncoder, mi: usize, ql: Ref, indices: Ref, out: Ref, n: u32, key_length: u32) void {
-    const c = x.c;
-    const k = x.k;
-    const blocks = c.attnBlocks();
-    const vals = @as(usize, n) * blocks * c.mla_heads * c.kv_lora * 4;
-    const marks = @as(usize, n) * blocks * c.mla_heads * 4;
-    const part = x.sc.apart;
-    e.setPipeline(k.sparse_split);
-    bind(e, 0, .{ ql, x.s.mla[mi].keys, indices });
-    e.setValue(@as(f32, 1.0 / 16.0), 3);
-    e.setValue([4]i32{ @intCast(c.keyWidth()), @intCast(key_length), cfg.attn_span, 0 }, 4);
-    bind(e, 5, .{ part, part.at(vals), part.at(vals + marks) });
-    e.dispatchGroups(size(c.mla_heads / 16, blocks, n), size(128, 1, 1));
-    e.setPipeline(k.sparse_combine);
-    bind(e, 0, .{ part, part.at(vals), part.at(vals + marks) });
-    e.setValue(@as(i32, @intCast(blocks)), 3);
-    bind(e, 4, .{out});
-    e.dispatchGroups(size(c.mla_heads, n, 1), size(128, 1, 1));
-}
-
-/// Key lists for `n` rows at positions p0.. past index_topk keys (indexer queries `iq` a row `q_stride` apart).
-pub fn selectKeys(x: *const Ctx, e: mtl.ComputeEncoder, mi: usize, iq: Ref, q_stride: u32, iw: Ref, scores: Ref, indices: Ref, n: u32, p0: u32) void {
-    const c = x.c;
-    const k = x.k;
-    const s_stride = x.s.cap / c.kpool + 1;
-    const most = (p0 + n) / c.kpool; // the last row's blocks
-    e.setPipeline(k.index_decode); // a row's heads as the tensor op's rows (glm_index_nax.metal)
-    bind(e, 0, .{ iq, iw, x.s.mla[mi].pool, scores });
-    e.setValue(ScoreArgs{ .p0 = p0, .q_stride = q_stride, .w_stride = c.i_heads, .s_stride = s_stride, .rows = n }, 4);
-    e.dispatchGroups(size((most + 127) / 128, n, 1), size(128, 1, 1));
-    e.setPipeline(k.index_select);
-    bind(e, 0, .{ scores, indices });
-    e.setValue(SelectArgs{ .p0 = p0, .top = c.i_topk / c.kpool, .width = c.keyWidth(), .s_stride = s_stride, .i_stride = c.keyWidth() }, 2);
-    e.dispatchGroups(size(n, 1, 1), size(1024, 1, 1));
-}
-
-/// The sparse kernel for `n` rows' 64 heads over their listed keys (`key_length` keys written so far).
-pub fn attendIndexed(x: *const Ctx, e: mtl.ComputeEncoder, mi: usize, ql: Ref, indices: Ref, out: Ref, n: u32, key_length: u32) void {
-    const c = x.c;
-    e.setPipeline(if (c.tp > 1) x.k.sparse_attention_tp else x.k.sparse_attention);
-    bind(e, 0, .{ ql, x.s.mla[mi].keys, indices });
-    e.setValue(@as(f32, 1.0 / 16.0), 3);
-    e.setValue(@as(i32, @intCast(key_length)), 4);
-    bind(e, 5, .{out});
-    e.dispatchThreads(size(1024, n * c.mla_heads, 1), size(1024, 1, 1));
-}
+// MLA math (absorb, attendDense|Sparse|Blocks, selectKeys, attendIndexed) lives in mla_attn.zig, re-exported here.
 
 fn denseMlp(x: *const Ctx, e: mtl.ComputeEncoder, w: *const wts.Dense, x_in: Ref, rows: u32) void {
     if (!on(x, "dense")) return;
@@ -612,7 +509,7 @@ pub fn headOver(x: *const Ctx, e: mtl.ComputeEncoder, in: Ref, logits: Ref, pick
     if (x.c.tp > 1) x.ep.?.argmax(e, logits, picks, n, part[0], rows);
 }
 
-/// A judged window's first `keep` of `rows` in every KDA layer (replayed from the round's entry state when some were rejected).
+/// A judged window's first `keep` of `rows` in every KDA layer (replayed from entry state when some rejected).
 pub fn keepKda(x: *Ctx, e: mtl.ComputeEncoder, rows: u32, keep: u32) void {
     keepKdaAt(x, e, 0, rows, keep);
 }

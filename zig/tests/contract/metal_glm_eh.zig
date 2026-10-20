@@ -9,15 +9,12 @@ const c = contract.spec;
 const g = contract.gates;
 const Dense = contract.dense.Dense;
 
-/// One 8-wide MMA step a k-tile (its products round as they enter the fp32 dot), the tiles in
-/// turn into the fp32 accumulator, and the guard the chain's tail carries: k/8 steps at k = 8192.
+/// depth = k/8 + 8: one 8-wide MMA per k-tile (products round into fp32 accumulator) + chain-tail guard.
 fn depth(s: c.Shape) usize {
     return s.k / 8 + 8;
 }
 
-/// The engine's prompt chunks: every full chunk height (prompt.zig's heights, at 16384 on the
-/// roomiest Macs) and the last chunk's tail (absorb = remaining - 1, any positive count) at its
-/// least, one row; 8 first, so the single-shape gates run a whole tile.
+/// Engine prompt shapes: every full chunk height (max 16384 on roomiest Macs) + tail (1 row). 8 first = whole tile.
 const served = [_]c.Shape{
     .{ .rows = 8, .n = 4096, .k = 8192 },
     .{ .rows = 2048, .n = 4096, .k = 8192 },
@@ -34,8 +31,7 @@ pub fn spec() c.Spec {
         .accum = .f32,
         .depth = depth,
         .out = .bf16,
-        // Rows: the launcher's ceil-div grid takes any positive count (the last chunk's tail);
-        // n moves in 64-column tiles; k is an interior loop with no tiling of its own.
+        // Rows: ceil-div grid (any positive count, last chunk's tail); n: 64-col tiles; k: interior, no tiling.
         .tiles = .{ .{ .size = 8, .step = 1, .min = 1 }, .{ .size = 64, .step = 64, .min = 64 }, .{} },
         .served = &served,
     };
@@ -65,8 +61,7 @@ pub const Nax = struct {
     out: rig_.Ref = undefined,
 
     pub fn init(a: std.mem.Allocator, device: mtl.Device, queue: mtl.Queue) !Nax {
-        // The engine's own compilation unit for this pipeline (wide.zig's gather_source:
-        // core_row_projection, glue_math, glm_rows and glm_gather concatenated).
+        // Engine's compile unit: wide.zig's gather_source (core_row_projection + glue_math + glm_rows + glm_gather).
         return .{
             .a = a,
             .rig = .{ .a = a, .device = device, .queue = queue },
@@ -94,8 +89,7 @@ pub const Nax = struct {
         const d = try Dense.init(self.a, shape, 1);
         self.d = d;
         d.fillX(fill, seed, 2);
-        // W as bf16 bits: values in [-1, 1), or gate 4's mirrored integers, half a row the
-        // negative of the other half, so the stress sums cancel and the partials stay under 2^24.
+        // W: bf16 in [-1, 1), or gate-4 mirrored ints (half row negated); sums cancel, partials < 2^24.
         const bits = try self.a.alloc(u16, shape.n * shape.k);
         defer self.a.free(bits);
         var prng = std.Random.DefaultPrng.init(seed ^ 0x6d);

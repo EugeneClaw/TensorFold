@@ -1,4 +1,4 @@
-//! The tensor-unit eh_proj: no worse than the row kernel on an fp64 reference; decode and prompt shapes on identical rows.
+//! Tensor-unit eh_proj: no worse than the row kernel on an fp64 reference; decode and prompt shapes on identical rows.
 const std = @import("std");
 const mtl = @import("metal");
 const sources = @import("kernel_sources");

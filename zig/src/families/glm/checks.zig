@@ -35,7 +35,7 @@ pub fn capture(e: *Engine, prompt: []const u32, path: []const u8) !void {
     std.debug.print("captured {d} rows ({d} bytes) in {s}\n", .{ n, bytes, path });
 }
 
-/// Each call of a plain reply (prompt windows, then `steps` rows of `reply`), sublayer by sublayer: glm_ref.py --trace's twin.
+/// Each call of a plain reply (prompt, then `steps` rows of `reply`), sublayer by sublayer, twin of glm_ref.py --trace.
 pub fn trace(e: *Engine, prompt: []const u32, reply: []const u32, steps: usize, path: []const u8) !void {
     const c = &e.c;
     const pool = mtl.objc.Pool.push();
@@ -70,7 +70,7 @@ pub fn trace(e: *Engine, prompt: []const u32, reply: []const u32, steps: usize, 
     std.debug.print("traced {d} calls ({d} prompt rows, {d} steps) in {s}\n", .{ calls, P, total - P, path });
 }
 
-/// Teacher-forced agreement: the greedy picks with `reply`'s tokens fed back; how many equal them, the first that differs.
+/// Teacher-forced agreement: greedy picks with `reply`'s tokens fed back; how many equal, the first that differs.
 pub fn forced(e: *Engine, prompt: []const u32, reply: []const u32) !struct { same: usize, first: ?usize } {
     const c = &e.c;
     const pool = mtl.objc.Pool.push();
@@ -103,7 +103,7 @@ pub fn forced(e: *Engine, prompt: []const u32, reply: []const u32) !struct { sam
     return .{ .same = same, .first = first };
 }
 
-/// Knock-out profile: a `depth`-draft round replayed `reps` times with each launch class left out in turn, by median GPU time.
+/// Knock-out profile: a `depth`-draft round replayed `reps` times with each class left out in turn, by median GPU time.
 pub fn profile(e: *Engine, depth: u32, reps: usize, only: bool, parts: bool) !void {
     const c = &e.c;
     const D = c.hidden;
@@ -151,7 +151,7 @@ pub fn profile(e: *Engine, depth: u32, reps: usize, only: bool, parts: bool) !vo
     }
 }
 
-/// The chunk path's matmul against the decode's row kernel on layer 0's real KDA in-projection input: the share that differs.
+/// Chunk path's matmul vs decode's row kernel on layer 0's KDA in-projection input: the share that differs.
 pub fn checkMatmul(e: *Engine, prompt: []const u32) !void {
     const pr = &(e.pr orelse return error.NoPromptPath);
     const rows: u32 = @intCast(@min(prompt.len, st.max_rows));
@@ -188,8 +188,7 @@ pub fn checkMatmul(e: *Engine, prompt: []const u32) !void {
     std.debug.print("matmul check (layer 0 KDA in-projection, {d} rows x {d}): {d} of {d} bf16 outputs differ ({d:.3}%), at most {d} steps\n", .{ rows, N, differ, @as(usize, rows) * N, 100 * @as(f64, @floatFromInt(differ)) / @as(f64, @floatFromInt(@as(usize, rows) * N)), worst });
 }
 
-/// One reply's per-round counter-span rollup (GLM_COUNTER_SPANS=1): total wall, sum of per-class spans, BUBBLES = wall − Σspan − encoding.
-/// Prints the report inline; the table itself lives on the engine (`e.span_table`).
+/// One reply's per-round counter-span rollup (GLM_COUNTER_SPANS=1): wall, Σspan, BUBBLES; table lives on engine.
 pub fn counterSpans(e: *Engine) !void {
     const table = if (e.span_table) |t| t else return;
     var sum_per_class: [counters_class.Kind.count]f64 = @splat(0);
@@ -227,12 +226,7 @@ pub fn counterSpans(e: *Engine) !void {
     }
 }
 
-/// Run `reps` rounds at `rows` × `depth` and record per-class spans. Each round = one rep in the span table.
-/// Mirrors the GLM_PROFILE shaping but uses GLM_COUNTER_SPANS data; emits a per-rep table inline.
-/// Per rep: a whole-round span (Kind._round) wraps mtp+backbone+head; wall is the CPU time begin→wait-done,
-/// encoding the CPU time begin→commit (engine.committed), Σspan the 12 class spans' GPU sum.
-/// BUBBLES = wall − Σspan − encoding (STALL-CENSUS-PLAN formula); gpu ms and gpu−Σspan print beside as the
-/// GPU-timeline cross-check (the synchronous drive's GPU idles only between spans).
+/// Run `reps` rounds at `rows` × `depth`, record per-class spans; BUBBLES = wall − Σspan − encoding.
 pub fn counterSpanDrive(e: *Engine, rows: u32, depth: u32, reps: usize) !void {
     const c = &e.c;
     const D = c.hidden;
@@ -299,19 +293,12 @@ pub fn counterSpanDrive(e: *Engine, rows: u32, depth: u32, reps: usize) !void {
     }
 }
 
-/// A prompt chunk's GPU time by class (median of `reps`): whole, then each class left out (alone with `only`); a pair runs it together.
-/// B4 enhancement: the class list now separates `mla_proj`/`mla_attn` and `kda_proj`/`kda_attn`
-/// so the profile can isolate attention-MATH (scores/softmax/values kernels, KDA recurrence) from
-/// PROJECTIONS (x_proj/qr_proj/kv_b absorb/unabsorb/o_proj, KDA in/out GEMMs). The meta-classes
-/// `mla` and `kda` are retained so the legacy grouping still works.
+/// A prompt chunk's GPU time by class (median of `reps`); B4 splits proj vs attn to isolate MATH from PROJECTIONS.
 pub fn profilePrompt(e: *Engine, prompt: []const u32, reps: usize, only: bool, parts: bool) !void {
     profilePromptAt(e, prompt, reps, only, parts, 0, e.pr.?.rows);
 }
 
-/// A prompt chunk's GPU time by class at position `pos` (rows `M`). When `pos == 0` this is the
-/// first chunk (vanilla profilePrompt); for `pos >= 100000` the prompt path warms state to `pos`
-/// before timing, so the profiled chunk sees the late-context cache shape.
-/// Default M = e.pr.?.rows (engine's chunk size).
+/// A prompt chunk's GPU time by class at `pos` (rows `M`); pos>=100000 warms state to `pos` first.
 pub fn profilePromptAt(e: *Engine, prompt: []const u32, reps: usize, only: bool, parts: bool, pos: u32, M_arg: u32) !void {
     const pr = &(e.pr orelse return error.NoPromptPath);
     const C = fwd.Class;
@@ -322,8 +309,7 @@ pub fn profilePromptAt(e: *Engine, prompt: []const u32, reps: usize, only: bool,
     e.sync();
     @memcpy(Engine.u32s(e.prompt_ids, prompt.len), prompt[0..prompt.len]);
     const total: u32 = @intCast(prompt.len);
-    // B4 late-chunk warmup: when pos > 0, fill state from at=0 up to at=pos in chunk_rows steps
-    // (the engine's normal prefill path), then profile the chunk at `pos` itself.
+    // B4 late-chunk warmup: pos>0 fills state from at=0 up to at=pos in chunk_rows steps, profile chunk at `pos`.
     if (pos > 0) {
         var at: u32 = 0;
         while (at < pos and at < total) {
@@ -338,8 +324,7 @@ pub fn profilePromptAt(e: *Engine, prompt: []const u32, reps: usize, only: bool,
         }
     }
     const P = fwd.Part;
-    // B4: 14 profile classes (the original 10 + 4 finer splits). Trailing zeros pad to 16 so
-    // the (classes.len + 3) mask walk below reaches the all-set and full-again sentinels.
+    // B4: 14 profile classes (10 + 4 finer splits); zeros pad to 16 so the +3 mask walk reaches sentinels.
     const classes = if (parts) [_]u32{ P.bit("mla_proj"), P.bit("mla_cache"), P.bit("mla_absorb"), P.bit("mla_select"), P.bit("mla_attn"), P.bit("mla_unabs"), P.bit("mla_out"), P.bit("kda_in"), P.bit("kda_pre"), P.bit("kda_scan"), P.bit("kda_post"), P.bit("kda_out"), 0, 0, 0, 0 } else [_]u32{ C.hc, C.kda, C.mla, C.dense, C.route, C.routed, C.shared, C.exchange, C.combine, C.ends, C.mla_proj, C.mla_attn, C.kda_proj, C.kda_attn, 0, 0 };
     var all: u32 = 0;
     for (classes) |m| {
@@ -356,7 +341,7 @@ pub fn profilePromptAt(e: *Engine, prompt: []const u32, reps: usize, only: bool,
         const m = if (mask == all) all else if (only and mask != 0) all & ~mask else mask;
         if (parts) x.pskip = m else x.skip = m;
         for (0..reps + 1) |rep| {
-            // B4: pos==0 resets state per rep, pos>0 replays the chunk cache-write [pos, pos+M); flipKda keeps the KDA buffers coherent.
+            // B4: pos==0 resets state per rep; pos>0 replays chunk cache-write [pos, pos+M); flipKda keeps KDA.
             if (pos == 0) e.s.reset();
             const b = e.begin();
             prompt_mod.backbone(pr, &x, b.enc, e.prompt_ids.at(@as(usize, pos) * 4), M, pos);

@@ -82,9 +82,7 @@ pub const SampleBuffer = struct {
     id: objc.Id,
     count: usize,
 
-    /// Shared opaque samples support CPU resolution after command completion, including stage-only devices.
-    /// GLM_COUNTER_STORAGE=private picks MTLStorageModePrivate (2): on some OS builds the shared-mode
-    /// mapping is what poisons a loaded engine process (first setPipelineState after allocation SIGSEGVs).
+    /// Opaque; CPU post-completion. GLM_COUNTER_STORAGE=private = MTLStorageModePrivate(2); shared SIGSEGVs on some OS.
     pub fn init(dev: device.Device, count: usize) !SampleBuffer {
         if (count == 0 or count > max_samples) return error.InvalidSampleCount;
         const capability = query(dev);

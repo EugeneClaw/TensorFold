@@ -1,14 +1,11 @@
-//! GLM-5.3-Flash's counter-span Class enum: the 12 launch classes the profile gates use, plus a whole-round sentinel.
-//! The same names appear in forward.zig's Class bit-flag struct, with one bit per class (in declaration order).
+//! 12 launch classes for the profile gates + a whole-round sentinel; bit positions match forward.zig's Class.
 const std = @import("std");
 const mtl = @import("metal");
 const counters_mod = @import("../../core/gpu_counters.zig");
 const RecorderT = counters_mod.RecorderT;
 const SpanT = counters_mod.SpanT;
 
-/// Per-class GPU span tags. Names mirror forward.zig's Class bit positions in declaration order.
-/// Indices map 1:1 to the bit masks in forward.zig: bit i (1 << i) corresponds to the i-th enum variant.
-/// `_round` (bit 12) is a whole-round envelope; it never gates dispatch.
+/// Per-class GPU span tags; `_round` (bit 12) is a whole-round envelope that never gates dispatch.
 pub const Kind = enum(u8) {
     hc = 0,
     kda = 1,
@@ -26,8 +23,7 @@ pub const Kind = enum(u8) {
 
     pub const count = @typeInfo(Kind).@"enum".field_names.len; // 13
 
-    /// The bit mask in forward.zig's Class for this kind, by index parity. Since forward.zig's bit positions
-    /// follow declaration order (hc=1<<0 .. ends=1<<11), this is a direct @intFromEnum.
+    /// The bit mask in forward.zig's Class for this kind (bit i = 1 << i, declaration order).
     pub fn bit(self: Kind) u32 {
         const idx = @backingInt(self);
         const shrunk: u5 = @intCast(idx);

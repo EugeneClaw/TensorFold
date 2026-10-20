@@ -9,9 +9,7 @@ pub const max_span_capacity: usize = 65536;
 pub const Options = struct { enabled: bool = false, max_spans: usize = 512 };
 pub const Aggregate = struct { calls: u64 = 0, gpu_seconds: f64 = 0 };
 
-/// The default-typed Span (legacy callers): a record tagged by the general-purpose Class enum.
-/// Alias, not a twin struct: `Recorder.readAfterCompletion()` yields `SpanT(Class)` values, and
-/// distinct struct types would not coerce (the counter consumer's report copies them by element).
+/// Default-typed Span (legacy): record tagged by the general-purpose Class enum; alias, not a twin struct.
 pub const Span = SpanT(Class);
 const State = enum { idle, recording, resolved, read, broken };
 
@@ -95,8 +93,7 @@ pub fn RecorderT(comptime C: type) type {
         clock_before: counters.ClockSample = .{},
         calibration: ?Calibration = null,
         totals: [class_n]Aggregate = @splat(.{}),
-        /// Diagnostic bisect switch (GLM_COUNTER_SPAN_SITES=0): bind and read per command buffer
-        /// without opening any span, so a crash's ownership splits between the bind/read path and the wrap sites.
+        /// Diagnostic bisect switch (GLM_COUNTER_SPAN_SITES=0): bind and read per cb without opening any span.
         sites: bool = true,
 
         /// Init-only bounded storage; disabled init allocates nothing.
@@ -117,7 +114,7 @@ pub fn RecorderT(comptime C: type) type {
             return self.resources != null;
         }
 
-        /// For disabled Recorders this is intentionally unqueried; use metal.counters.query(device) to inspect hardware.
+        /// For disabled Recorders this is unqueried; use metal.counters.query(device) to inspect hardware.
         pub fn capability(self: *const Self) counters.Capability {
             return self.hardware;
         }
@@ -130,8 +127,7 @@ pub fn RecorderT(comptime C: type) type {
             }
             if (self.state != .idle and self.state != .read) return error.CounterRecordingInFlight;
             if (cb.status() != .not_enqueued) return error.CounterCommandAlreadySubmitted;
-            // Hold the cb's underlying id via retain. The caller still owns the cb handle in Metal's autorelease pool,
-            // but Metal retains it on commit; we mirror with an explicit retain for balance.
+            // Hold cb's id via retain: caller owns cb in pool; Metal retains on commit, we mirror for balance.
             self.command_buffer = cb.retain();
             self.clock_before = counters.sampleClocks(self.resources.?.device);
             self.calibration = null;

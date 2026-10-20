@@ -1,11 +1,9 @@
-//! glm_grid against a host u16 reference of its exact RNE rule, at every k: catches a kernel that
-//! compiles but silently does not write (the no-op failure mode the first window exposed downstream).
+//! glm_grid vs a host u16 RNE reference at every k; catches a kernel that compiles but silently no-ops.
 const std = @import("std");
 const mtl = @import("metal");
 const sources = @import("kernel_sources");
 
-/// The kernel's rule, on u16 bit patterns: RNE on the low 7-k mantissa bits, sign and exponent
-/// carried bit-for-bit (carries fold naturally in the u16 field), NaN/Inf (exponent 0xff) pass through.
+/// RNE on low 7-k mantissa bits; sign/exponent carried bit-for-bit (carries fold), NaN/Inf (exp 0xff) pass through.
 fn gridRef(u: u16, k: u5) u16 {
     const drop: u32 = 7 - @as(u32, k);
     const mask: u16 = @intCast((@as(u32, 1) << @intCast(drop)) - 1);

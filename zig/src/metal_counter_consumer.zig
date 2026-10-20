@@ -177,12 +177,7 @@ fn supportedDevice() !mtl.Device {
     return device;
 }
 
-// The engine's GLM_COUNTER_SPANS crash repro, isolated. The engine allocates the counter
-// sample buffer mid-load, then k.widen creates the wide pipelines (tf_embed_b8_g64) AFTER it;
-// the first setPipeline on such a pipeline SIGSEGVs inside AGX setComputePipelineState.
-// GLM_REPRO_CASE: a = pipeline first, engine span order (sample then bind);
-// b = pipeline bound before the sample; c = a tiny pipeline bound, then sample, then embed;
-// d = the engine's allocation order: the 4096-sample buffer exists BEFORE the embed pipeline is created.
+// GLM_COUNTER_SPANS crash repro: cases a-d vary pipeline vs counter alloc order; 1st setPipeline SIGSEGVs in AGX.
 test "dispatch counter sample around the generated embed pipeline binds or crashes reproducibly" {
     const case = blk: {
         const v = std.c.getenv("GLM_REPRO_CASE") orelse break :blk 'a';
@@ -193,8 +188,7 @@ test "dispatch counter sample around the generated embed pipeline binds or crash
     const device = try supportedDevice();
     defer device.deinit();
     const sources = @import("kernel_sources");
-    // Case e: the engine compiles ~24 libraries on WORKER THREADS (kernels.load's Jobs) before the
-    // recorder exists; case f allocates hundreds of MTLBuffers first (wts.load's shape).
+    // Cases e/f: e = ~24 libs on workers (kernels.load Jobs); f = 100s MTLBuffers (wts.load shape); pre-recorder.
     if (case == 'e') {
         const Worker = struct {
             device: mtl.Device,
@@ -227,8 +221,7 @@ test "dispatch counter sample around the generated embed pipeline binds or crash
         std.debug.print("case f: 64 x 8 MB MTLBuffers allocated\n", .{});
     }
     if (case == 'g') {
-        // The engine keeps every pipeline it ever created alive (~thousands); case e destroyed
-        // its worker pipelines. Keep a realistic population alive across the sample buffer.
+        // Engine keeps every pipeline alive (~1000s); case e destroys workers, keep realistic pop across buffer.
         var alive = try std.ArrayList(mtl.Pipeline).initCapacity(std.testing.allocator, 512);
         defer {
             for (alive.items) |p| p.deinit();
