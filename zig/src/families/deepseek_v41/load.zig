@@ -21,7 +21,7 @@ pub const Plan = struct {
     tensors: std.StringHashMapUnmanaged(Reference) = .empty,
     bytes: usize = 0,
 
-    pub fn open(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, table_dir: []const u8) !Plan {
+    pub fn open(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, table_dir: ?[]const u8) !Plan {
         var self = Plan{ .arena = std.heap.ArenaAllocator.init(gpa) };
         errdefer self.deinit();
         const a = self.arena.allocator();
@@ -55,17 +55,19 @@ pub const Plan = struct {
             if (!std.mem.eql(u8, std.fs.path.basename(self.shards.items[ref.shard].path), item.value_ptr.string))
                 return error.CheckpointIndexMismatch;
         }
-        for ([_]struct { layer: u32, file: []const u8, rows: usize }{
-            .{ .layer = 1, .file = "model-00047-of-00048.safetensors", .rows = 384006168 },
-            .{ .layer = 14, .file = "model-00048-of-00048.safetensors", .rows = 384016682 },
-        }) |table| {
-            const prefix = try std.fmt.allocPrint(a, "layers.{d}.engram.embed.", .{table.layer});
-            try self.add(try std.fs.path.join(a, &.{ table_dir, table.file }), prefix, null);
-            const weight = try std.fmt.allocPrint(a, "{s}weight", .{prefix});
-            const scale = try std.fmt.allocPrint(a, "{s}scale", .{prefix});
-            try self.require(weight, .f8_e4m3, &.{ table.rows, 256 });
-            try self.require(scale, .f8_e8m0, &.{ table.rows, 8 });
-            if (self.shards.items[self.shards.items.len - 1].names.count() != 2) return error.UnexpectedEngramTensor;
+        if (table_dir) |td| {
+            for ([_]struct { layer: u32, file: []const u8, rows: usize }{
+                .{ .layer = 1, .file = "model-00047-of-00048.safetensors", .rows = 384006168 },
+                .{ .layer = 14, .file = "model-00048-of-00048.safetensors", .rows = 384016682 },
+            }) |table| {
+                const prefix = try std.fmt.allocPrint(a, "layers.{d}.engram.embed.", .{table.layer});
+                try self.add(try std.fs.path.join(a, &.{ td, table.file }), prefix, null);
+                const weight = try std.fmt.allocPrint(a, "{s}weight", .{prefix});
+                const scale = try std.fmt.allocPrint(a, "{s}scale", .{prefix});
+                try self.require(weight, .f8_e4m3, &.{ table.rows, 256 });
+                try self.require(scale, .f8_e8m0, &.{ table.rows, 8 });
+                if (self.shards.items[self.shards.items.len - 1].names.count() != 2) return error.UnexpectedEngramTensor;
+            }
         }
         return self;
     }

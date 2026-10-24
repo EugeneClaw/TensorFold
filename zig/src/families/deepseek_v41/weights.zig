@@ -34,7 +34,17 @@ pub const Moe = struct {
     shared: [3]Matrix,
     descriptors: [3]mtl.Buffer,
 };
-pub const Engram = struct { table: Tensor, scales: Tensor, q_weight: Tensor, k_weight: Tensor, wkv: Matrix };
+pub const Engram = struct {
+    /// Null when the tables were not bound (`--engram-stream-dir`): the row source reads them a window at a time, and
+    /// a consumer that needs them must say so instead of reading an unbound view.
+    table: ?Tensor,
+    scales: ?Tensor,
+    q_weight: Tensor,
+    k_weight: Tensor,
+    wkv: Matrix,
+    /// True when `table`/`scales` are absent because the tables are streamed rather than resident.
+    streamed: bool = false,
+};
 pub const Layer = struct {
     attn_norm: Tensor,
     ffn_norm: Tensor,
@@ -69,14 +79,14 @@ pub fn sizeofDescriptors() usize {
 }
 
 /// Every executed tensor is checked using headers only, before checkpoint materialization or model allocation.
-pub fn validate(plan: *const load.Plan) !void {
-    try populate(false, plan, null);
+pub fn validate(plan: *const load.Plan, stream: bool) !void {
+    try populate(false, plan, null, stream);
 }
 
 /// Bind resident tensors and marker payloads; route descriptors replace redundant host matrix metadata.
-pub fn bind(device: mtl.Device, checkpoint: *const cp.Checkpoint) !Model {
+pub fn bind(device: mtl.Device, checkpoint: *const cp.Checkpoint, stream: bool) !Model {
     var model: Model = undefined;
-    try populate(true, checkpoint, &model);
+    try populate(true, checkpoint, &model, stream);
     var owned: usize = 0;
     errdefer for (0..owned) |i| model.layers[i / 3].moe.descriptors[i % 3].deinit();
     var prefix: [128]u8 = undefined;
@@ -248,7 +258,7 @@ fn matrix(comptime binding: bool, source: anytype, prefix: []const u8, k: usize,
     }
 }
 
-fn populate(comptime binding: bool, source: anytype, model: ?*Model) !void {
+fn populate(comptime binding: bool, source: anytype, model: ?*Model, stream: bool) !void {
     try plain(binding, source, "embed.weight", .bf16, &.{ 129280, 5120 }, if (binding) &model.?.embed else null);
     try plain(binding, source, "norm.weight", .bf16, &.{5120}, if (binding) &model.?.norm else null);
     try matrix(binding, source, "head", 5120, 129280, if (binding) &model.?.head else null);
@@ -338,8 +348,25 @@ fn populate(comptime binding: bool, source: anytype, model: ?*Model) !void {
         if (engram) {
             const e: ?*Engram = if (binding) &out.?.engram.? else null;
             const rows: usize = if (layer == 1) 384006168 else 384016682;
-            try plain(binding, source, try named(&name, "layers.{d}.engram.embed.weight", .{layer}), .f8_e4m3, &.{ rows, 256 }, if (binding) &e.?.table else null);
-            try plain(binding, source, try named(&name, "layers.{d}.engram.embed.scale", .{layer}), .f8_e8m0, &.{ rows, 8 }, if (binding) &e.?.scales else null);
+            if (stream) {
+                // The row source reads these a window at a time from the release's shards; there is no resident view.
+                if (binding) {
+                    e.?.table = null;
+                    e.?.scales = null;
+                    e.?.streamed = true;
+                }
+            } else {
+                var weight_tensor: Tensor = undefined;
+                var scale_tensor: Tensor = undefined;
+                try plain(binding, source, try named(&name, "layers.{d}.engram.embed.weight", .{layer}), .f8_e4m3, &.{ rows, 256 }, if (binding) &weight_tensor else null);
+                try plain(binding, source, try named(&name, "layers.{d}.engram.embed.scale", .{layer}), .f8_e8m0, &.{ rows, 8 }, if (binding) &scale_tensor else null);
+                if (binding) {
+                    e.?.table = weight_tensor;
+                    e.?.scales = scale_tensor;
+                    // Engram is constructed as `undefined`, so the field's default never applies: say it explicitly.
+                    e.?.streamed = false;
+                }
+            }
             try plainEither(binding, source, try named(&name, "layers.{d}.engram.q_weight", .{layer}), &.{ 4, 5120 }, if (binding) &e.?.q_weight else null);
             try plainEither(binding, source, try named(&name, "layers.{d}.engram.k_weight", .{layer}), &.{ 4, 5120 }, if (binding) &e.?.k_weight else null);
             try matrix(binding, source, try named(&prefix, "layers.{d}.engram.wkv", .{layer}), 6144, 25600, if (binding) &e.?.wkv else null);

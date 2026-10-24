@@ -16,6 +16,15 @@ const primes = [2][24]u32{
 fn word(raw: []const u8, at: usize) u32 {
     return std.mem.readInt(u32, raw[at..][0..4], .little);
 }
+/// Where a streamed model's Engram rows come from. One call per (layer, row): the reference asks only for the rows a
+/// handful of teacher tokens touch, so there is no cache here — the reader's own staging is enough.
+pub const RowSource = struct {
+    ptr: *anyopaque,
+    rowFn: *const fn (p: *anyopaque, layer: usize, row: u32, out: []u16) anyerror!void,
+    pub fn row(s: RowSource, layer: usize, id: u32, out: []u16) !void {
+        return s.rowFn(s.ptr, layer, id, out);
+    }
+};
 pub const State = struct {
     map: []const u8,
     history: [3]u32 = .{ 2, 2, 2 },
@@ -59,7 +68,7 @@ pub const State = struct {
         self.history[1] = self.history[0];
         self.history[0] = id;
     }
-    pub fn apply(self: *State, e: Engram, layer: usize, id: u32, h: []u16, c: Config, scratch: *projection.Scratch) !void {
+    pub fn apply(self: *State, e: Engram, layer: usize, id: u32, h: []u16, c: Config, scratch: *projection.Scratch, rows: ?RowSource) !void {
         @setFloatMode(.strict);
         const tokens = [4]u32{ id, self.history[0], self.history[1], self.history[2] };
         var rolling = @as(u64, tokens[0]) * multipliers[layer][0];
@@ -69,8 +78,12 @@ pub const State = struct {
             for (0..8) |head| {
                 const column = (lookback - 1) * 8 + head;
                 const row = offset + @as(usize, @intCast(rolling % primes[layer][column]));
-                for (0..256) |d| self.gathered[column * 256 + d] =
-                    m.b(m.value(e.table, row * 256 + d) * m.value(e.scales, row * 8 + d / 32));
+                if (e.streamed) {
+                    // The tables are not resident; ask the row source for exactly the row the resident path would read.
+                    const src = rows orelse return error.ReferenceNeedsResidentEngramTables;
+                    try src.row(layer, @intCast(row), self.gathered[column * 256 ..][0..256]);
+                } else for (0..256) |d| self.gathered[column * 256 + d] =
+                    m.b(m.value(e.table.?, row * 256 + d) * m.value(e.scales.?, row * 8 + d / 32));
                 offset += primes[layer][column];
             }
         }

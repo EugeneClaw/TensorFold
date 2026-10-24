@@ -29,6 +29,7 @@ fn words(_: ?*anyopaque, err: anyerror) ?[]const u8 {
         error.NoFreeSlot => "every lane slot is busy",
         error.LoadLimitExceeded => "the resident payload does not fit the load limit: raise GLM_LOAD_LIMIT_GB or free memory",
         error.MissingEngramTables => "the checkpoint has no Engram tables: pass --engram-table-dir with the original release's shards",
+        error.UnknownEngramLayer => "an Engram layer is not one the release shards carry: --engram-stream-dir takes the release's own two Engram shards",
         error.InvalidTokenMap => "engram-token-map.bin is missing or stale beside the checkpoint",
         else => null,
     };
@@ -82,7 +83,7 @@ pub fn open(a: Allocator, gpa: Allocator, io: std.Io, o: api.Open, problem: *[]c
     }
     const map = try std.fmt.allocPrintSentinel(a, "{s}/engram-token-map.bin", .{o.dir}, 0);
     defer a.free(map);
-    ensureTokenMap(a, io, map, o.engram_table_dir);
+    ensureTokenMap(a, io, map, o.engram_stream_dir orelse o.engram_table_dir);
     var map_io = io;
     _ = &map_io;
     const device_probe = mtl.Device.init() catch null;
@@ -100,6 +101,7 @@ pub fn open(a: Allocator, gpa: Allocator, io: std.Io, o: api.Open, problem: *[]c
     model.* = ds.Model.open(gpa, io, .{
         .dir = o.dir,
         .table_dir = o.engram_table_dir,
+        .stream_dir = o.engram_stream_dir,
         .token_map = map,
         .context = if (o.context) |c| if (c > 0) @intCast(@min(c, std.math.maxInt(u32))) else 0 else 0,
         .lanes = @max(1, @min(o.lanes, 256)),

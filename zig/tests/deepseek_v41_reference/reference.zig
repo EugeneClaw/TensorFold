@@ -65,6 +65,7 @@ pub const Reference = struct {
     capacity: u32,
     position: u32 = 0,
     projection_scratch: projection.Scratch,
+    rows: ?engram.RowSource = null,
     attention_state: attention.State,
     engram_state: engram.State,
     logits: []f32,
@@ -101,6 +102,10 @@ pub const Reference = struct {
         const logits = try gpa.alloc(f32, 129280);
         return .{ .gpa = gpa, .c = c, .w = w, .checkpoint = checkpoint, .capacity = capacity, .projection_scratch = projection_scratch, .attention_state = attention_state, .engram_state = engram_state, .logits = logits };
     }
+    /// Rows for a streamed model, when the caller has one (see engram_math.RowSource).
+    pub fn attachRows(self: *Reference, source: engram.RowSource) void {
+        self.rows = source;
+    }
     pub fn deinit(self: *Reference) void {
         self.projection_scratch.deinit();
         self.attention_state.deinit();
@@ -117,7 +122,12 @@ pub const Reference = struct {
         }
         var pre = [4]f32{ 1, 0, 0, 0 };
         for (&self.w.layers, 0..) |*layer, layer_id| {
-            if (layer.engram) |e| try self.engram_state.apply(e, if (layer_id == 1) 0 else 1, compressed, &self.h, self.c, &self.projection_scratch);
+            if (layer.engram) |e| {
+                // A streamed model has no resident Engram rows: the caller may supply a row source, and if it does not,
+                // say so by name rather than reading an unbound view.
+                if (e.streamed and self.rows == null) return error.ReferenceNeedsResidentEngramTables;
+                try self.engram_state.apply(e, if (layer_id == 1) 0 else 1, compressed, &self.h, self.c, &self.projection_scratch, self.rows);
+            }
             const attn_mix = math.mixes(&self.h, layer.hc_attn, self.c);
             math.collapse(&self.h, pre, &self.input);
             math.rms(&self.input, layer.attn_norm, self.c.eps, &self.input);

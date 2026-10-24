@@ -4,6 +4,11 @@ const mtl = @import("metal");
 const tf = @import("tensorfold");
 const Model = tf.deepseek_v41.Model;
 const Reference = @import("reference.zig").Reference;
+const engram_rows = tf.deepseek_v41_engram_rows;
+fn streamRow(p: *anyopaque, layer: usize, row: u32, out: []u16) anyerror!void {
+    const r: *engram_rows.Rows = @ptrCast(@alignCast(p));
+    return r.rowsU32(layer, &.{row}, 256, out);
+}
 const Stage = tf.deepseek_v41_profiler.Stage;
 const widths = [_]usize{ 20480 * 2, 5120 * 2, 5120 * 2, 6 * 4, 6 * 4 };
 const stride = 61488;
@@ -75,6 +80,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, model: *Model, ids: []const u32, 
         model.residency.commit();
     }
     var reference = try Reference.init(gpa, model.cfg, &model.weights, &model.checkpoint, token_map, @intCast(ids.len));
+    // Same row source the serve uses, so a streamed model can be traced at all.
+    var stream_rows: ?*engram_rows.Rows = null;
+    if (std.c.getenv("TF_DSV41_ENGRAM_STREAM_DIR")) |d| {
+        stream_rows = try engram_rows.Rows.open(gpa, io, std.mem.span(d), 0, 1, &.{ 1, 14 }, 4096);
+        reference.attachRows(.{ .ptr = stream_rows.?, .rowFn = streamRow });
+    }
+    defer if (stream_rows) |r| r.close();
     defer reference.deinit();
     reference.observer = .{ .ctx = &capture, .read = Capture.reference };
     const expected = try gpa.alloc(f32, ids.len * 129280);

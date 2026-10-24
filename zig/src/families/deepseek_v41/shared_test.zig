@@ -3,6 +3,7 @@ test {
     _ = @import("engram_host.zig");
     _ = @import("engram_tables.zig");
     _ = @import("engram_shared_test.zig");
+    _ = @import("engram_rows_safetensors_test.zig");
     if (@import("builtin").os.tag == .linux) _ = @import("engram_rows_test.zig");
     std.testing.refAllDecls(@import("engram_rows.zig").Rows);
     std.testing.refAllDecls(@import("phases.zig"));

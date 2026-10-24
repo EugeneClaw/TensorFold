@@ -1,8 +1,10 @@
 //! Actual checkpoint teacher comparison: independent CPU arithmetic versus the resident GPU decode path.
 const std = @import("std");
 const mtl = @import("metal");
-const Model = @import("tensorfold").deepseek_v41.Model;
+const tf = @import("tensorfold");
+const Model = tf.deepseek_v41.Model;
 const Reference = @import("reference.zig").Reference;
+const engram_rows = tf.deepseek_v41_engram_rows;
 const nrms_limit: f64 = 0.01;
 
 pub const Result = struct {
@@ -91,10 +93,32 @@ fn maximum(row: []const f32) !u32 {
     return id;
 }
 
+fn streamRow(p: *anyopaque, layer: usize, row: u32, out: []u16) anyerror!void {
+    const r: *engram_rows.Rows = @ptrCast(@alignCast(p));
+    // `layer` arrives as the reference's own index (0 for layer 1, 1 for layer 14), which is the reader's order.
+    try r.rowsU32(layer, &.{row}, 256, out);
+    if (std.c.getenv("TF_DSV41_DUMP_ROW") != null) {
+        // One line per row fetched: enough to check these exact bytes against a direct read of the shard.
+        var fnv: u64 = 0xcbf29ce484222325;
+        for (std.mem.sliceAsBytes(out)) |b| {
+            fnv ^= b;
+            fnv *%= 0x100000001b3;
+        }
+        var hex: [32]u8 = undefined;
+        std.debug.print("ROWDUMP layer={d} row={d} fnv={s} first={x},{x},{x},{x}\n", .{ layer, row, std.fmt.bufPrint(&hex, "{x}", .{fnv}) catch "?", out[0], out[1], out[2], out[3] });
+    }
+}
 pub fn run(gpa: std.mem.Allocator, io: std.Io, model: *Model, ids: []const u32, token_map: []const u8, dir: []const u8) !Result {
     if (ids.len == 0 or ids.len > 16) return error.InvalidOracleWindow;
     var reference = try Reference.init(gpa, model.cfg, &model.weights, &model.checkpoint, token_map, @intCast(ids.len));
     defer reference.deinit();
+    // A streamed model keeps its Engram tables on disk; give the reference a row source so the comparison can happen.
+    var stream_rows: ?*engram_rows.Rows = null;
+    if (std.c.getenv("TF_DSV41_ENGRAM_STREAM_DIR")) |d| {
+        stream_rows = try engram_rows.Rows.open(gpa, io, std.mem.span(d), 0, 1, &.{ 1, 14 }, 4096);
+        reference.attachRows(.{ .ptr = stream_rows.?, .rowFn = streamRow });
+    }
+    defer if (stream_rows) |r| r.close();
     var margins = MarginLog{};
     reference.attention_state.score_probe = .{ .ctx = &margins, .record = &MarginLog.capture };
     const cpu = try gpa.alloc(f32, ids.len * 129280);
