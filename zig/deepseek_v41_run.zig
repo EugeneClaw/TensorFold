@@ -183,13 +183,13 @@ pub fn main(init: std.process.Init) !void {
     const pool = mtl.objc.Pool.push();
     defer pool.pop();
     if (std.mem.eql(u8, mode, "plan")) {
-        const cfg = try config.Config.load(arena, io, args[2]);
+        const cfg = try config.Config.read(arena, io, args[2]);
         var plan = try load.Plan.open(a, io, args[2], args[3]);
         defer plan.deinit();
-        try weights.validate(&plan);
+        try weights.validate(&plan, false);
         const device = try mtl.Device.init();
         defer device.deinit();
-        std.debug.print("{{\"mode\":\"plan\",\"weight_bytes\":{d},\"shards\":{d},\"tensors\":{d},\"context\":{d},\"metal_working_set_bytes\":{d}}}\n", .{ plan.bytes, plan.shards.items.len, plan.tensors.count(), cfg.text_config.rope.max_positions, device.maxWorkingSet() });
+        std.debug.print("{{\"mode\":\"plan\",\"weight_bytes\":{d},\"shards\":{d},\"tensors\":{d},\"context\":{d},\"metal_working_set_bytes\":{d}}}\n", .{ plan.bytes, plan.shards.items.len, plan.tensors.count(), cfg.rope.max_positions, device.maxWorkingSet() });
         return;
     }
     const is_operators = std.mem.eql(u8, mode, "operators");
@@ -219,6 +219,8 @@ pub fn main(init: std.process.Init) !void {
     model.* = try ds.Model.open(a, io, .{
         .dir = args[2],
         .table_dir = args[3],
+        // LOCAL (receipt run): stream the Engram tables from the release, the class this machine can hold.
+        .stream_dir = if (std.c.getenv("TF_DSV41_ENGRAM_STREAM_DIR")) |d| std.mem.span(d) else null,
         .token_map = map,
         .lanes = if (is_lanes) 2 else 1,
         // Two full-capacity caches sit at the machine's wired edge; the receipt needs only the prompt's window.

@@ -185,6 +185,31 @@ pub fn metalTargets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
         .{ .name = "tf-dispatch-bench", .path = "zig/tests/dispatch_bench.zig", .about = "Dispatch boundary benchmark" },
         .{ .name = "tf-kernel-exact", .path = "zig/tests/kernel_exact.zig", .about = "Bit-exact check of a kernel against an MLX oracle case" },
     };
+    // The DSV41 qualification tool on real weights (this branch has the source but no step).
+    {
+        const run_mod = b.createModule(.{
+            .root_source_file = b.path("zig/deepseek_v41_run.zig"),
+            .target = target, .optimize = optimize, .link_libc = true,
+            .imports = &.{
+                .{ .name = "tensorfold", .module = mods.engine },
+                .{ .name = "metal", .module = metal },
+                .{ .name = "contract", .module = @import("kernel_contract.zig").module(b, target, optimize) },
+            },
+        });
+        const run_exe = b.addExecutable(.{ .name = "tf-dsv41-run", .root_module = run_mod });
+        b.installArtifact(run_exe);
+        b.step("tf-dsv41-run", "DSV41 qualification receipts on real weights").dependOn(&b.addInstallArtifact(run_exe, .{}).step);
+
+        const ids_mod = b.createModule(.{
+            .root_source_file = b.path("zig/tf_ids_tmp.zig"),
+            .target = target, .optimize = optimize, .link_libc = true,
+            .imports = &.{.{ .name = "tokenizer", .module = tokenizer }},
+        });
+        const ids_exe = b.addExecutable(.{ .name = "tf-ids", .root_module = ids_mod });
+        b.installArtifact(ids_exe);
+        b.step("tf-ids", "text to token ids JSON").dependOn(&b.addInstallArtifact(ids_exe, .{}).step);
+    }
+
     for (programs) |p| {
         const mod = b.createModule(.{
             .root_source_file = b.path(p.path),

@@ -304,10 +304,17 @@ pub fn ropeFrequency(index: usize, theta: f32, original: u32, factor: f32, beta_
 }
 pub fn rope(x: []u16, position: usize, compressed: bool, inverse: bool, c: Config) void {
     for (0..32) |i| {
-        const frequency = ropeFrequency(i, if (compressed) c.rope.compress_theta else c.rope.theta, if (compressed) c.rope.original_max_position_embeddings else 0, c.rope.factor, c.rope.beta_fast, c.rope.beta_slow);
+        // The flat config types rope constants as f64; ropeFrequency takes f32 and was written against an f32
+        // config, so these conversions restore the reference's own types rather than changing its arithmetic.
+        const frequency = ropeFrequency(i, @floatCast(if (compressed) c.rope.compress_theta else c.rope.theta), if (compressed) @as(u32, @intCast(c.rope.original_max_positions)) else 0, @floatCast(c.rope.factor), @floatCast(c.rope.beta_fast), @floatCast(c.rope.beta_slow));
         const angle: f32 = @as(f32, @floatFromInt(position)) * frequency;
-        const cosine = @cos(angle);
-        const sine = @sin(angle) * (if (inverse) @as(f32, -1) else @as(f32, 1));
+        // The engine evaluates cos/sin on an f64 angle and narrows once (rope.zig:75). Matching that here was measured
+        // and changed nothing, bit for bit, so the reference keeps its own f32 evaluation: no claim, no noise.
+        const cos64: f64 = @cos(angle);
+        const sin64: f64 = @sin(angle);
+        const cosine: f32 = @floatCast(cos64);
+        const sin32: f32 = @floatCast(sin64);
+        const sine: f32 = sin32 * (if (inverse) @as(f32, -1) else @as(f32, 1));
         const at = x.len - 64 + 2 * i;
         const a = f(x[at]);
         const z = f(x[at + 1]);
