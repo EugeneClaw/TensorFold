@@ -25,6 +25,7 @@ fn usage(code: u8) noreturn {
         "       tf-dsv41-run margins MODEL TABLES IDS_JSON OUT_DIR [DEEP]\n" ++
         "       tf-dsv41-run profile MODEL TABLES IDS_JSON OUT_DIR\n" ++
         "       tf-dsv41-run trace MODEL TABLES IDS_JSON OUT_DIR\n" ++
+        "       tf-dsv41-run gate MODEL TABLES IDS_JSON OUT_DIR\n" ++
         "       tf-dsv41-run operators MODEL TABLES OUT_DIR\n" ++
         "       tf-dsv41-run attention-sameinput MODEL TABLES TRACE_CPU_BIN OUT_DIR [LAYER]\n" ++
         "       tf-dsv41-run attention-history-sameinput MODEL TABLES TRACE_DIR OUT_DIR TOKEN LAYER\n" ++
@@ -50,7 +51,7 @@ fn validArguments(args: []const [:0]const u8) bool {
     for ([_][]const u8{ "teacher", "generate", "attention-sameinput", "hc-sameinput", "moe-sameinput", "margins" }) |name|
         if (std.mem.eql(u8, mode, name)) return args.len == 6 or args.len == 7;
     if (std.mem.eql(u8, mode, "lanes")) return args.len == 6 or args.len == 7 or args.len == 8;
-    for ([_][]const u8{ "seams", "oracle", "profile", "trace" }) |name|
+    for ([_][]const u8{ "seams", "oracle", "profile", "trace", "gate" }) |name|
         if (std.mem.eql(u8, mode, name)) return args.len == 6;
     return false;
 }
@@ -198,7 +199,7 @@ pub fn main(init: std.process.Init) !void {
     const is_hc = std.mem.eql(u8, mode, "hc-sameinput");
     const is_moe = std.mem.eql(u8, mode, "moe-sameinput");
     const is_lanes = std.mem.eql(u8, mode, "lanes");
-    const max_ids: usize = if (std.mem.eql(u8, mode, "margins")) 1048576 else if (std.mem.eql(u8, mode, "oracle") or std.mem.eql(u8, mode, "trace")) 16 else if (std.mem.eql(u8, mode, "profile")) ds.prefill_step else if (std.mem.eql(u8, mode, "teacher") or std.mem.eql(u8, mode, "seams") or is_lanes) 4096 else 1048576;
+    const max_ids: usize = if (std.mem.eql(u8, mode, "margins")) 1048576 else if (std.mem.eql(u8, mode, "oracle") or std.mem.eql(u8, mode, "trace") or std.mem.eql(u8, mode, "gate")) 16 else if (std.mem.eql(u8, mode, "profile")) ds.prefill_step else if (std.mem.eql(u8, mode, "teacher") or std.mem.eql(u8, mode, "seams") or is_lanes) 4096 else 1048576;
     const input = if (is_operators or is_attention or is_attention_history or is_hc or is_moe) &.{} else try std.Io.Dir.cwd().readFileAlloc(io, args[4], arena, .limited(max_ids * 12 + 2));
     const ids: []const u32 = if (is_operators or is_attention or is_attention_history or is_hc or is_moe) &.{} else try std.json.parseFromSliceLeaky([]const u32, arena, input, .{});
     if (!is_operators and !is_attention and !is_attention_history and !is_hc and !is_moe and (ids.len == 0 or ids.len > 1048576)) return error.InvalidPrompt;
@@ -206,10 +207,11 @@ pub fn main(init: std.process.Init) !void {
     for (ids) |id| if (id >= 129280) return error.InvalidToken;
     const is_oracle = std.mem.eql(u8, mode, "oracle");
     const is_trace = std.mem.eql(u8, mode, "trace");
+    const is_gate = std.mem.eql(u8, mode, "gate");
     const dir = args[if (is_operators) @as(usize, 4) else 5];
     try std.Io.Dir.cwd().createDirPath(io, dir);
     const map = try std.fs.path.join(arena, &.{ args[2], "engram-token-map.bin" });
-    const map_blob = if (is_oracle or is_trace)
+    const map_blob = if (is_oracle or is_trace or is_gate)
         try std.Io.Dir.cwd().readFileAlloc(io, map, arena, .limited(2 << 20))
     else
         &.{};
@@ -271,6 +273,7 @@ fn execute(a: std.mem.Allocator, io: std.Io, model: *ds.Model, args: []const [:0
     const is_oracle = std.mem.eql(u8, mode, "oracle");
     const is_profile = std.mem.eql(u8, mode, "profile");
     const is_trace = std.mem.eql(u8, mode, "trace");
+    const is_gate = std.mem.eql(u8, mode, "gate");
     const is_teacher = std.mem.eql(u8, mode, "teacher");
     const is_seams = std.mem.eql(u8, mode, "seams");
     const is_lanes = std.mem.eql(u8, mode, "lanes");
@@ -343,6 +346,10 @@ fn execute(a: std.mem.Allocator, io: std.Io, model: *ds.Model, args: []const [:0
         if (bit_disagreements != 0) return error.LaneInterference;
     } else if (is_trace) {
         try trace.run(a, io, model, ids, map_blob, dir);
+    } else if (is_gate) {
+        // Same capture as `trace`, but ids are pinned to the engine's own selection, which is what makes every later
+        // stage comparison arithmetic-only. The pass/fail evaluation reads the artefacts this writes.
+        try trace.runGate(a, io, model, ids, map_blob, dir);
     } else if (is_teacher or is_seams) {
         const chunk = if (args.len > 6) try number(args[6]) else model.workspace.plan.rows;
         if (chunk == 0 or chunk > model.workspace.plan.rows) return error.InvalidPrefillChunk;

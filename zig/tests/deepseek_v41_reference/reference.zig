@@ -21,12 +21,81 @@ pub const MoeRouting = struct {
     weights: [6]f32 = undefined,
 };
 
-pub fn moeSelect(moe_weights: weights.Moe, c: config.Config, logits: *const [384]f32, scores: *[384]f32, ids: *[6]u32, routing_weights: *[6]f32) void {
+/// The reduction order a caller uses to normalise the six selected scores. `f64_sequential` is this file's own
+/// arithmetic; the two f32 variants are legal orders a GPU implementation may take, and exist so a gate can compare
+/// an engine against the *envelope* of legal orders rather than against one member of it.
+pub const WeightOrder = enum { f64_sequential, f32_pairwise, f32_ascending };
+
+pub fn moeWeights(c: config.Config, scores: *const [384]f32, ids: *const [6]u32, order: WeightOrder, routing_weights: *[6]f32) void {
     @setFloatMode(.strict);
-    for (logits, scores) |z, *score| {
-        const softplus = if (z > 20) z else std.math.log1p(@exp(z));
-        score.* = @sqrt(softplus);
+    for (ids, 0..) |id, i| routing_weights[i] = scores[id];
+    switch (order) {
+        // This file's arithmetic: sum the six in selection order, widen once.
+        .f64_sequential => {
+            var normalization: f64 = 0;
+            for (routing_weights) |v| normalization += v;
+            const denominator = @as(f32, @floatCast(normalization)) + 1e-20;
+            for (routing_weights) |*v| v.* = (v.* / denominator) * c.routed_scale;
+        },
+        // route.metal, verbatim: left=(p0+p4)+p2; right=(p1+p5)+p3; s=left+right.
+        .f32_pairwise => {
+            const w = routing_weights.*;
+            const left = (w[0] + w[4]) + w[2];
+            const right = (w[1] + w[5]) + w[3];
+            const denominator: f32 = (left + right) + 1e-20;
+            for (routing_weights) |*v| v.* = (v.* / denominator) * c.routed_scale;
+        },
+        // Six f32 adds in selection order: the naive GPU reduction, a legal order of its own.
+        .f32_ascending => {
+            var denominator: f32 = 0;
+            for (routing_weights) |v| denominator += v;
+            denominator += 1e-20;
+            for (routing_weights) |*v| v.* = (v.* / denominator) * c.routed_scale;
+        },
     }
+}
+
+/// Distance from the selection boundary: the lowest selected biased score minus the highest unselected one. Always
+/// computed from this file's own scores, never from a caller-supplied or pinned weight vector, or the number says
+/// nothing about the reference's own arithmetic.
+pub fn selectionMargin(moe_weights: weights.Moe, scores: *const [384]f32, ids: *const [6]u32) f32 {
+    @setFloatMode(.strict);
+    var lowest_selected = std.math.inf(f32);
+    for (ids) |id| lowest_selected = @min(lowest_selected, scores[id] + math.value(moe_weights.bias, id));
+    var highest_unselected = -std.math.inf(f32);
+    for (0..384) |expert| {
+        var selected = false;
+        for (ids) |id| if (id == expert) {
+            selected = true;
+        };
+        if (!selected) highest_unselected = @max(highest_unselected, scores[expert] + math.value(moe_weights.bias, expert));
+    }
+    return lowest_selected - highest_unselected;
+}
+
+/// Which numerical form of the router's score transform this file uses. `libm` is Zig's `log1p(exp(z))`;
+/// `kernel_lp` is `route.metal`'s form verbatim (`u=1+e; u==1 ? e : e*(log(u)/(u-1))`). Both are legal f32
+/// implementations of the same equation, and the measured difference between them is the reason the legal-order
+/// envelope cannot be built from reduction order alone.
+pub const ScoreForm = enum { libm, kernel_lp };
+
+fn scoreOf(z: f32, form: ScoreForm) f32 {
+    @setFloatMode(.strict);
+    if (form == .kernel_lp) {
+        const softplus = if (z > 20) z else blk: {
+            const e = @exp(z);
+            const u = 1.0 + e;
+            break :blk if (u == 1.0) e else e * (@log(u) / (u - 1.0));
+        };
+        return @sqrt(softplus);
+    }
+    const softplus = if (z > 20) z else std.math.log1p(@exp(z));
+    return @sqrt(softplus);
+}
+
+pub fn moeSelectForm(moe_weights: weights.Moe, c: config.Config, logits: *const [384]f32, scores: *[384]f32, ids: *[6]u32, routing_weights: *[6]f32, order: WeightOrder, form: ScoreForm) void {
+    @setFloatMode(.strict);
+    for (logits, scores) |z, *score| score.* = scoreOf(z, form);
     var used: [384]bool = @splat(false);
     for (0..6) |pick| {
         var best: usize = 0;
@@ -39,13 +108,13 @@ pub fn moeSelect(moe_weights: weights.Moe, c: config.Config, logits: *const [384
             }
         }
         ids[pick] = @intCast(best);
-        routing_weights[pick] = scores[best];
         used[best] = true;
     }
-    var normalization: f64 = 0;
-    for (routing_weights) |v| normalization += v;
-    const denominator = @as(f32, @floatCast(normalization)) + 1e-20;
-    for (routing_weights) |*v| v.* = (v.* / denominator) * c.routed_scale;
+    moeWeights(c, scores, ids, order, routing_weights);
+}
+
+pub fn moeSelect(moe_weights: weights.Moe, c: config.Config, logits: *const [384]f32, scores: *[384]f32, ids: *[6]u32, routing_weights: *[6]f32) void {
+    moeSelectForm(moe_weights, c, logits, scores, ids, routing_weights, .f64_sequential, .libm);
 }
 
 pub fn moeActivation(gate: []const u16, up: []const u16, route: f32, c: config.Config, activation: []u16) void {
@@ -58,6 +127,8 @@ pub fn moeActivation(gate: []const u16, up: []const u16, route: f32, c: config.C
 }
 
 pub const Reference = struct {
+    pub const Pin = struct { ids: *const [40][6]u32 };
+
     gpa: std.mem.Allocator,
     c: config.Config,
     w: *const weights.Model,
@@ -66,6 +137,18 @@ pub const Reference = struct {
     position: u32 = 0,
     projection_scratch: projection.Scratch,
     rows: ?engram.RowSource = null,
+    /// When set, expert ids come from the caller (an engine capture). Selection still runs on this file's own logits,
+    /// and the weights are still this file's own arithmetic evaluated at the pinned ids — ids-only is the honest pin.
+    /// Pinning the weights as well would make the reference share the engine's arithmetic, which is a diagnostic,
+    /// never a qualification.
+    pin: ?Pin = null,
+    weight_order: WeightOrder = .f64_sequential,
+    score_form: ScoreForm = .libm,
+    /// This file's own distance from each layer's selection boundary, recorded whatever the pin says.
+    route_margins: [40]f32 = @splat(0),
+    /// The selection this file made before any pin was applied, so a gate can report where its own routing departs
+    /// from the engine's instead of only reporting that the pin held.
+    natural_ids: [40][6]u32 = std.mem.zeroes([40][6]u32),
     attention_state: attention.State,
     engram_state: engram.State,
     logits: []f32,
@@ -153,7 +236,13 @@ pub const Reference = struct {
     fn moe(self: *Reference, moe_weights: weights.Moe, layer: usize) !void {
         @setFloatMode(.strict);
         math.dense(moe_weights.gate, &self.input, &self.route_logits);
-        moeSelect(moe_weights, self.c, &self.route_logits, &self.route_scores, &self.last_routes, &self.last_routing);
+        moeSelectForm(moe_weights, self.c, &self.route_logits, &self.route_scores, &self.last_routes, &self.last_routing, self.weight_order, self.score_form);
+        // Recorded from this file's own scores and its own selection, before any pin can touch either.
+        self.route_margins[layer] = selectionMargin(moe_weights, &self.route_scores, &self.last_routes);
+        @memcpy(self.natural_ids[layer][0..], self.last_routes[0..]);
+        if (self.pin) |pin| @memcpy(self.last_routes[0..], pin.ids[layer][0..]);
+        if (self.pin != null)
+            moeWeights(self.c, &self.route_scores, &self.last_routes, self.weight_order, &self.last_routing);
         @memset(&self.moe_sum, 0);
         // Official MoE visits expert ids in ascending order, accumulates FP32, then adds shared expert last.
         for (0..384) |expert| {

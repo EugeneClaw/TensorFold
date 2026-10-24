@@ -30,6 +30,17 @@ pub const State = struct {
     history: [3]u32 = .{ 2, 2, 2 },
     gathered: [6144]u16 = undefined,
     kv: [25600]u16 = undefined,
+    /// The four applied gate scalars, one per copy, kept so a trace can print the value the reference actually used
+    /// instead of inferring it from a bf16 hidden state.
+    gates: [4]f32 = @splat(0),
+
+    /// Diagnostic faults, set only by a caller that is measuring the gate rather than qualifying a model.
+    pub const Faults = struct {
+        /// XOR into the first gathered value: 1 flips one bf16 ulp (sensitivity floor), 0x3C00 flips the exponent.
+        pub var gather_xor: u16 = 0;
+        /// Multiplier on every applied gate scalar.
+        pub var gate_scale: f32 = 1;
+    };
 
     pub fn init(blob: []const u8) !State {
         const at = 96 + 2 * 232;
@@ -87,6 +98,8 @@ pub const State = struct {
                 offset += primes[layer][column];
             }
         }
+        // Before the projection, so the fault propagates the way a bad row would.
+        if (Faults.gather_xor != 0) self.gathered[0] ^= Faults.gather_xor;
         try projection.apply(.{ .trellis = e.wkv }, &self.gathered, &self.kv, scratch);
         for (0..4) |copy| {
             var hh: f64 = 0;
@@ -109,7 +122,8 @@ pub const State = struct {
             const rstd: f32 = h_inverse * k_inverse;
             const dot_f32: f32 = @floatCast(dot);
             const normalized: f32 = (dot_f32 * rstd) * (1 / @sqrt(@as(f32, 5120)));
-            const gate = m.sigmoid(std.math.copysign(@sqrt(@max(@abs(normalized), 1e-6)), normalized));
+            const gate = m.sigmoid(std.math.copysign(@sqrt(@max(@abs(normalized), 1e-6)), normalized)) * Faults.gate_scale;
+            self.gates[copy] = gate;
             for (0..5120) |d| {
                 const at = copy * 5120 + d;
                 h[at] = m.b(m.f(h[at]) + gate * m.f(self.kv[20480 + d]));
